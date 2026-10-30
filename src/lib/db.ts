@@ -4,7 +4,13 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
 
 const connectionString =
-  process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5433/eticaret";
+  (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("localhost:5433")
+    ? process.env.DATABASE_URL
+    : process.env.STORAGE_DATABASE_URL_POOLED ||
+      process.env.STORAGE_DATABASE_URL ||
+      process.env.STORAGE_POSTGRES_URL ||
+      process.env.POSTGRES_URL ||
+      process.env.DATABASE_URL) ?? "postgresql://postgres:postgres@localhost:5433/eticaret";
 
 const PRISMA_SCHEMA_VERSION = "2026-10-29-invoicing-v1";
 
