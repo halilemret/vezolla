@@ -1,0 +1,73 @@
+// SEO & GEO (Generative Engine Optimization & Yerel Coğrafi Hedefleme) Modelleri
+
+model SeoKeyword {
+  id            String              @id @default(cuid())
+  keyword       String
+  targetUrl     String
+  searchEngine  String              @default("google")
+  currentRank   Int?
+  previousRank  Int?
+  searchVolume  Int                 @default(0)
+  intent        String              @default("COMMERCIAL") // INFORMATIONAL | COMMERCIAL | TRANSACTIONAL | NAVIGATIONAL
+  difficulty    Int                 @default(50) // 1 - 100
+  lastCheckedAt DateTime            @default(now())
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  history       SeoKeywordHistory[]
+
+  @@index([keyword])
+  @@index([targetUrl])
+}
+
+model SeoKeywordHistory {
+  id         String     @id @default(cuid())
+  keywordId  String
+  keyword    SeoKeyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+  rank       Int
+  recordedAt DateTime   @default(now())
+
+  @@index([keywordId, recordedAt])
+}
+
+model SeoAuditScore {
+  id            String   @id @default(cuid())
+  overallScore  Int
+  seoScore      Int
+  geoScore      Int // Generative Engine Optimization Skoru
+  localScore    Int // Coğrafi / Yerel SEO Skoru
+  issuesCount   Int      @default(0)
+  warningsCount Int      @default(0)
+  passedCount   Int      @default(0)
+  details       Json?
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model BotCrawlLog {
+  id          String   @id @default(cuid())
+  botName     String // Googlebot, Bingbot, GPTBot, PerplexityBot, ClaudeBot, Applebot
+  botCategory String   @default("SEARCH_ENGINE") // SEARCH_ENGINE | AI_AGENT | SOCIAL
+  path        String
+  statusCode  Int      @default(200)
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  @@index([botName, createdAt])
+  @@index([createdAt])
+}
+
+model SearchPerformanceMetric {
+  id          String   @id @default(cuid())
+  date        DateTime
+  channel     String   @default("GOOGLE_ORGANIC") // GOOGLE_ORGANIC | AI_CHATGPT | AI_PERPLEXITY | AI_GEMINI | BING
+  impressions Int      @default(0)
+  clicks      Int      @default(0)
+  ctr         Float    @default(0)
+  avgPosition Float    @default(0)
+  createdAt   DateTime @default(now())
+
+  @@unique([date, channel])
+  @@index([date])
+}

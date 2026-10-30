@@ -1,0 +1,152 @@
+// Kimlik: personel, roller, müşteriler, oturumlar, adresler
+
+model StaffUser {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  roleId       String
+  role         Role      @relation(fields: [roleId], references: [id])
+  /// Mağaza sahibi tüm izinlere sahiptir ve silinemez
+  isOwner      Boolean   @default(false)
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions   StaffSession[]
+  auditLogs  AuditLog[]
+  savedViews SavedView[]
+}
+
+model Role {
+  id          String      @id @default(cuid())
+  name        String      @unique
+  description String?
+  /// İzin anahtarları, bkz. src/lib/rbac/permissions.ts
+  permissions String[]
+  /// Sistem rolleri silinemez (izinleri düzenlenebilir)
+  isSystem    Boolean     @default(false)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  users       StaffUser[]
+}
+
+model StaffSession {
+  /// Çerezdeki token'ın SHA-256 özeti. Ham token veritabanında tutulmaz.
+  id        String    @id
+  userId    String
+  user      StaffUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  ip        String?
+  userAgent String?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model CustomerGroup {
+  id          String      @id @default(cuid())
+  name        String      @unique
+  description String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  customers   Customer[]
+  priceLists  PriceList[]
+}
+
+model Customer {
+  id                 String         @id @default(cuid())
+  email              String         @unique
+  /// Null ise misafir müşteri kaydıdır (sadece sipariş vermiş, hesap açmamış)
+  passwordHash       String?
+  firstName          String
+  lastName           String
+  phone              String?
+  groupId            String?
+  group              CustomerGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  acceptsMarketing   Boolean        @default(false)
+  marketingConsentAt DateTime?
+  kvkkConsentAt      DateTime?
+  emailVerifiedAt    DateTime?
+  /// Panelde personelin gördüğü iç not
+  note               String?
+  tags               String[]
+  isActive           Boolean        @default(true)
+  orderCount         Int            @default(0)
+  totalSpent         Int            @default(0)
+  lastOrderAt        DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  sessions  CustomerSession[]
+  addresses Address[]
+  orders    Order[]
+  carts     Cart[]
+  wishlist            WishlistItem[]
+  wishlistCollections WishlistCollection[]
+  reviews             Review[]
+  visitors  Visitor[]
+
+  @@index([createdAt])
+}
+
+model CustomerSession {
+  id         String   @id
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([customerId])
+}
+
+enum InvoiceType {
+  INDIVIDUAL
+  CORPORATE
+}
+
+model Address {
+  id                String      @id @default(cuid())
+  customerId        String
+  customer          Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  title             String?
+  firstName         String
+  lastName          String
+  phone             String
+  city              String
+  district          String
+  neighborhood      String?
+  line1             String
+  postalCode        String?
+  invoiceType       InvoiceType @default(INDIVIDUAL)
+  tckn              String?
+  companyName       String?
+  taxOffice         String?
+  taxNumber         String?
+  isDefaultShipping Boolean     @default(false)
+  isDefaultBilling  Boolean     @default(false)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  @@index([customerId])
+}
+
+enum AuthTokenType {
+  PASSWORD_RESET
+  EMAIL_VERIFY
+  STAFF_INVITE
+}
+
+model AuthToken {
+  /// Token özeti
+  id          String        @id
+  type        AuthTokenType
+  customerId  String?
+  staffUserId String?
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime      @default(now())
+}

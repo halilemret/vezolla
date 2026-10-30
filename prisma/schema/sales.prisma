@@ -1,0 +1,478 @@
+// Satış: sepet, promosyon, kargo, sipariş, ödeme, iade, gönderim, favoriler
+
+model Cart {
+  id               String     @id @default(cuid())
+  customerId       String?
+  customer         Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  visitorId        String?
+  email            String?
+  phone            String?
+  currency         String     @default("TRY")
+  promoCodes       String[]
+  /// CheckoutAddress şekli, bkz. src/modules/checkout/schemas.ts
+  shippingAddress  Json?
+  billingAddress   Json?
+  shippingMethodId String?
+  paymentMethod    String?
+  note             String?
+  completedAt      DateTime?
+  orderId          String?
+  /// Terk edilmiş sepet hatırlatması gönderildi mi
+  recoveryEmailAt        DateTime?
+  /// Hangi funnel adımında terk edildi: cart, address, shipping, payment, contracts
+  lastStep               String?    @default("cart")
+  /// 1 tıkla sepeti geri yükleme linki için tekil kurtarma anahtarı
+  recoveryToken          String?
+  abandonedAt            DateTime?
+  recoveryEmailSentCount Int        @default(0)
+  recoveredAt            DateTime?
+  recoveryDiscountCode   String?
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
+  items                  CartItem[]
+
+  @@index([customerId])
+  @@index([visitorId])
+  @@index([updatedAt])
+  @@index([abandonedAt])
+  @@index([recoveryEmailAt])
+  @@index([recoveryToken])
+}
+
+model CartItem {
+  id        String         @id @default(cuid())
+  cartId    String
+  cart      Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  quantity  Int
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@unique([cartId, variantId])
+}
+
+enum PromotionType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  FREE_SHIPPING
+  BUY_X_GET_Y
+}
+
+model Promotion {
+  id               String           @id @default(cuid())
+  name             String
+  description      String?
+  /// Null ise otomatik uygulanan indirimdir
+  code             String?          @unique
+  type             PromotionType
+  /// PERCENTAGE: baz puan (1500 = %15), FIXED_AMOUNT: kuruş
+  value            Int              @default(0)
+  /// Koşullar, bkz. src/modules/promotions/schemas.ts
+  conditions       Json
+  /// BUY_X_GET_Y: X adet al, Y adet indirimli
+  buyQuantity      Int?
+  getQuantity      Int?
+  /// BUY_X_GET_Y'de bedava/indirimli ürünlere uygulanacak indirim (10000 = bedava)
+  getDiscountBps   Int?
+  /// İndirim tavanı (kuruş)
+  maxDiscount      Int?
+  usageLimit       Int?
+  usagePerCustomer Int?
+  usageCount       Int              @default(0)
+  startsAt         DateTime?
+  endsAt           DateTime?
+  isActive         Boolean          @default(true)
+  /// Diğer indirimlerle birlikte kullanılabilir mi
+  isCombinable     Boolean          @default(false)
+  priority         Int              @default(0)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  usages           PromotionUsage[]
+}
+
+model PromotionUsage {
+  id             String    @id @default(cuid())
+  promotionId    String
+  promotion      Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  orderId        String
+  order          Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customerId     String?
+  email          String
+  code           String?
+  discountAmount Int
+  createdAt      DateTime  @default(now())
+
+  @@index([promotionId])
+  @@index([email])
+}
+
+model ShippingMethod {
+  id             String   @id @default(cuid())
+  name           String
+  description    String?
+  /// Kargo firması kodu, bkz. src/modules/shipping/carriers.ts
+  carrier        String?
+  price          Int
+  /// Bu tutar ve üstü sepette ücretsiz
+  freeOverAmount Int?
+  /// Boşsa tüm iller
+  cities         String[]
+  /// Ağırlık kademeleri: [{ maxGrams, price }]
+  weightRules    Json?
+  estimatedDays  String?
+  isActive       Boolean  @default(true)
+  position       Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+enum OrderStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  AWAITING_TRANSFER
+  AWAITING_COD
+  PAID
+  PARTIALLY_REFUNDED
+  REFUNDED
+  FAILED
+  CANCELLED
+}
+
+enum FulfillmentStatus {
+  UNFULFILLED
+  PREPARING
+  PARTIALLY_SHIPPED
+  SHIPPED
+  DELIVERED
+  PARTIALLY_RETURNED
+  RETURNED
+}
+
+model Order {
+  id                  String            @id @default(cuid())
+  number              Int               @unique
+  customerId          String?
+  customer            Customer?         @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  email               String
+  phone               String?
+  status              OrderStatus       @default(OPEN)
+  paymentStatus       PaymentStatus     @default(PENDING)
+  fulfillmentStatus   FulfillmentStatus @default(UNFULFILLED)
+  currency            String            @default("TRY")
+  /// Ürünlerin indirim öncesi KDV dahil toplamı
+  subtotal            Int
+  discountTotal       Int               @default(0)
+  shippingTotal       Int               @default(0)
+  /// Kapıda ödeme hizmet bedeli
+  paymentFee          Int               @default(0)
+  /// Toplamın içindeki KDV
+  taxTotal            Int               @default(0)
+  total               Int
+  refundedTotal       Int               @default(0)
+  shippingAddress     Json
+  billingAddress      Json
+  shippingMethodId    String?
+  shippingMethodName  String?
+  paymentMethod       String
+  promoCodes          String[]
+  customerNote        String?
+  /// Sipariş anında üretilen sözleşme metinleri: { distanceSales, preInformation }
+  contracts           Json?
+  contractsAcceptedAt DateTime?
+  visitorId           String?
+  /// Reklam/kampanya kaynağı: { source, medium, campaign, adId, gclid, fbclid, ... }
+  attribution         Json?
+  source              String            @default("web")
+  ip                  String?
+  userAgent           String?
+  tags                String[]
+  placedAt            DateTime          @default(now())
+  paidAt              DateTime?
+  cancelledAt         DateTime?
+  cancelReason        String?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  items           OrderItem[]
+  payments        Payment[]
+  refunds         Refund[]
+  fulfillments    Fulfillment[]
+  returns         ReturnRequest[]
+  events          OrderEvent[]
+  promotionUsages PromotionUsage[]
+  reservations    StockReservation[]
+  invoices        Invoice[]
+
+  @@index([customerId])
+  @@index([email])
+  @@index([placedAt])
+  @@index([paymentStatus])
+  @@index([fulfillmentStatus])
+}
+
+model OrderItem {
+  id                String            @id @default(cuid())
+  orderId           String
+  order             Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// Varyant/ürün sonradan silinse de sipariş satırı korunur
+  variantId         String?
+  productId         String?
+  title             String
+  variantTitle      String?
+  sku               String?
+  imageUrl          String?
+  quantity          Int
+  unitPrice         Int
+  /// Satıra dağıtılmış toplam indirim
+  discountAmount    Int               @default(0)
+  taxRateBps        Int
+  taxAmount         Int
+  total             Int
+  costPrice         Int?
+  fulfilledQuantity Int               @default(0)
+  returnedQuantity  Int               @default(0)
+  fulfillmentItems  FulfillmentItem[]
+  returnItems       ReturnItem[]
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+enum PaymentState {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  CANCELLED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Payment {
+  id           String       @id @default(cuid())
+  orderId      String
+  order        Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// iyzico | bank_transfer | cod | manual
+  provider     String
+  amount       Int
+  status       PaymentState @default(PENDING)
+  providerRef  String?
+  providerData Json?
+  errorMessage String?
+  capturedAt   DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  refunds      Refund[]
+
+  @@index([orderId])
+  @@index([providerRef])
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+model Refund {
+  id              String         @id @default(cuid())
+  orderId         String
+  order           Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  paymentId       String?
+  payment         Payment?       @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  returnRequestId String?
+  amount          Int
+  reason          String?
+  status          RefundStatus   @default(PENDING)
+  providerRef     String?
+  errorMessage    String?
+  staffUserId     String?
+  createdAt       DateTime       @default(now())
+
+  @@index([orderId])
+}
+
+enum ShipmentStatus {
+  PREPARING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+model Fulfillment {
+  id             String            @id @default(cuid())
+  orderId        String
+  order          Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  warehouseId    String?
+  carrier        String?
+  trackingNumber String?
+  trackingUrl    String?
+  status         ShipmentStatus    @default(PREPARING)
+  shippedAt      DateTime?
+  deliveredAt    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  items          FulfillmentItem[]
+
+  @@index([orderId])
+}
+
+model FulfillmentItem {
+  id            String      @id @default(cuid())
+  fulfillmentId String
+  fulfillment   Fulfillment @relation(fields: [fulfillmentId], references: [id], onDelete: Cascade)
+  orderItemId   String
+  orderItem     OrderItem   @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  quantity      Int
+}
+
+enum ReturnStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  RECEIVED
+  REFUNDED
+  CANCELLED
+}
+
+model ReturnRequest {
+  id           String       @id @default(cuid())
+  orderId      String
+  order        Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status       ReturnStatus @default(REQUESTED)
+  reason       String?
+  customerNote String?
+  staffNote    String?
+  refundAmount Int?
+  restock      Boolean      @default(true)
+  receivedAt   DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  items        ReturnItem[]
+
+  @@index([orderId])
+  @@index([status])
+}
+
+model ReturnItem {
+  id              String        @id @default(cuid())
+  returnRequestId String
+  returnRequest   ReturnRequest @relation(fields: [returnRequestId], references: [id], onDelete: Cascade)
+  orderItemId     String
+  orderItem       OrderItem     @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  quantity        Int
+  reason          String?
+}
+
+model OrderEvent {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// status_changed | payment | fulfillment | refund | return | note | email | edit
+  type        String
+  message     String
+  data        Json?
+  staffUserId String?
+  /// true ise müşteriye gösterilmez (iç not)
+  isInternal  Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+model WishlistCollection {
+  id          String         @id @default(cuid())
+  customerId  String
+  customer    Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  isDefault   Boolean        @default(false)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  items       WishlistItem[]
+
+  @@index([customerId])
+}
+
+model WishlistItem {
+  id             String              @id @default(cuid())
+  customerId     String
+  customer       Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  collectionId   String?
+  collection     WishlistCollection? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+  priceWhenAdded Int?
+  note           String?
+  createdAt      DateTime            @default(now())
+
+  @@unique([customerId, productId])
+  @@index([customerId, collectionId])
+}
+
+enum InvoiceStatus {
+  DRAFT
+  QUEUED
+  ISSUED
+  FAILED
+  CANCELLED
+}
+
+enum EInvoiceType {
+  EARSIV
+  EFATURA
+}
+
+enum InvoiceProfile {
+  TEMEL_FATURA
+  TICARI_FATURA
+  EARSIV_FATURA
+}
+
+model Invoice {
+  id                 String         @id @default(cuid())
+  orderId            String
+  order              Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  invoiceNumber      String         @unique
+  ettn               String         @unique
+  invoiceType        EInvoiceType   @default(EARSIV)
+  profile            InvoiceProfile @default(EARSIV_FATURA)
+  status             InvoiceStatus  @default(ISSUED)
+  issueDate          DateTime       @default(now())
+  currency           String         @default("TRY")
+  subtotal           Int
+  taxTotal           Int
+  discountTotal      Int            @default(0)
+  total              Int
+  taxBreakdown       Json
+  recipientType      InvoiceType    @default(INDIVIDUAL)
+  recipientTitle     String
+  recipientTaxNumber String
+  recipientTaxOffice String?
+  recipientEmail     String?
+  recipientPhone     String?
+  recipientAddress   Json
+  provider           String         @default("vezolla_einvoice")
+  providerRef        String?
+  ublXml             String?        @db.Text
+  pdfUrl             String?
+  sentToCustomerAt   DateTime?
+  cancelledAt        DateTime?
+  cancelReason       String?
+  errorDetails       String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([orderId])
+  @@index([invoiceNumber])
+  @@index([ettn])
+  @@index([status])
+  @@index([issueDate])
+}

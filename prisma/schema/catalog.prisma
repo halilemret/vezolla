@@ -1,0 +1,339 @@
+// Katalog: ürün, seçenek, varyant, kategori, koleksiyon, marka, etiket, özel alanlar, vergi, fiyat listeleri
+// Tüm para alanları kuruş cinsinden Int, KDV dahil.
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+model Product {
+  id             String         @id @default(cuid())
+  title          String
+  slug           String         @unique
+  subtitle       String?
+  /// Tiptap HTML çıktısı
+  description    String?
+  status         ProductStatus  @default(DRAFT)
+  /// İleri tarihli ise o zamana kadar vitrinde görünmez
+  publishedAt    DateTime?
+  brandId        String?
+  brand          Brand?         @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  productTypeId  String?
+  productType    ProductType?   @relation(fields: [productTypeId], references: [id], onDelete: SetNull)
+  taxClassId     String?
+  taxClass       TaxClass?      @relation(fields: [taxClassId], references: [id], onDelete: SetNull)
+  seoTitle       String?
+  seoDescription String?
+  weightGrams    Int?
+  /// Listeleme ve sıralama için varyantlardan türetilen alanlar (servis katmanı günceller)
+  minPrice       Int?
+  maxPrice       Int?
+  totalStock     Int            @default(0)
+  salesCount     Int            @default(0)
+  viewCount      Int            @default(0)
+  ratingAvg      Float?
+  ratingCount    Int            @default(0)
+  /// Arama için birleştirilmiş metin (başlık, marka, SKU, etiketler)
+  searchText     String?
+  metadata       Json?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  deletedAt      DateTime?
+
+  options      ProductOption[]
+  variants     ProductVariant[]
+  images       ProductImage[]
+  categories   ProductCategory[]
+  collections  CollectionProduct[]
+  tags         ProductTag[]
+  attributes   ProductAttributeValue[]
+  reviews      Review[]
+  wishlistedBy WishlistItem[]
+  sourceLinks  ProductSourceLink[]
+
+  @@index([status, deletedAt])
+  @@index([brandId])
+  @@index([createdAt])
+}
+
+model ProductOption {
+  id        String               @id @default(cuid())
+  productId String
+  product   Product              @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name      String
+  position  Int                  @default(0)
+  values    ProductOptionValue[]
+
+  @@unique([productId, name])
+}
+
+model ProductOptionValue {
+  id       String               @id @default(cuid())
+  optionId String
+  option   ProductOption        @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  value    String
+  position Int                  @default(0)
+  /// Renk kodu (#RRGGBB) veya görsel URL'si, seçicide gösterilir
+  swatch   String?
+  variants VariantOptionValue[]
+
+  @@unique([optionId, value])
+}
+
+model ProductVariant {
+  id             String        @id @default(cuid())
+  productId      String
+  product        Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  title          String
+  sku            String?       @unique
+  barcode        String?
+  /// Tedarikçi ürün/varyant kodu (XML eşleştirmesi için)
+  supplierCode   String?
+  price          Int
+  compareAtPrice Int?
+  costPrice      Int?
+  weightGrams    Int?
+  position       Int           @default(0)
+  isActive       Boolean       @default(true)
+  trackInventory Boolean       @default(true)
+  allowBackorder Boolean       @default(false)
+  imageId        String?
+  image          ProductImage? @relation(fields: [imageId], references: [id], onDelete: SetNull)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  optionValues       VariantOptionValue[]
+  inventoryLevels    InventoryLevel[]
+  stockMovements     StockMovement[]
+  priceListPrices    PriceListPrice[]
+  cartItems          CartItem[]
+  backInStockRequests BackInStockRequest[]
+
+  @@index([productId])
+  @@index([barcode])
+  @@index([supplierCode])
+}
+
+model VariantOptionValue {
+  variantId     String
+  variant       ProductVariant     @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  optionValueId String
+  optionValue   ProductOptionValue @relation(fields: [optionValueId], references: [id], onDelete: Cascade)
+
+  @@id([variantId, optionValueId])
+}
+
+model ProductImage {
+  id        String           @id @default(cuid())
+  productId String
+  product   Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url       String
+  alt       String?
+  width     Int?
+  height    Int?
+  position  Int              @default(0)
+  createdAt DateTime         @default(now())
+  variants  ProductVariant[]
+
+  @@index([productId])
+}
+
+model Category {
+  id             String            @id @default(cuid())
+  name           String
+  slug           String            @unique
+  description    String?
+  parentId       String?
+  parent         Category?         @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children       Category[]        @relation("CategoryTree")
+  position       Int               @default(0)
+  imageUrl       String?
+  isActive       Boolean           @default(true)
+  seoTitle       String?
+  seoDescription String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  products       ProductCategory[]
+  feedMaps       FeedCategoryMap[]
+  merchRules     MerchRule[]
+
+  @@index([parentId])
+}
+
+model ProductCategory {
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  /// Kategori içi manuel sıralama
+  position   Int      @default(0)
+  isPrimary  Boolean  @default(false)
+
+  @@id([productId, categoryId])
+  @@index([categoryId])
+}
+
+enum CollectionType {
+  MANUAL
+  AUTOMATIC
+}
+
+model Collection {
+  id             String              @id @default(cuid())
+  title          String
+  slug           String              @unique
+  description    String?
+  imageUrl       String?
+  type           CollectionType      @default(MANUAL)
+  /// Otomatik koleksiyon kuralları: [{ field, operator, value }]
+  rules          Json?
+  matchAll       Boolean             @default(true)
+  /// manual | newest | price_asc | price_desc | best_selling | title
+  sortOrder      String              @default("manual")
+  isActive       Boolean             @default(true)
+  seoTitle       String?
+  seoDescription String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  products       CollectionProduct[]
+}
+
+model CollectionProduct {
+  collectionId String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  position     Int        @default(0)
+
+  @@id([collectionId, productId])
+  @@index([productId])
+}
+
+model Brand {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  slug        String    @unique
+  logoUrl     String?
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  products    Product[]
+}
+
+model Tag {
+  id       String       @id @default(cuid())
+  name     String       @unique
+  slug     String       @unique
+  products ProductTag[]
+}
+
+model ProductTag {
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tagId     String
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([productId, tagId])
+  @@index([tagId])
+}
+
+model ProductType {
+  id         String                 @id @default(cuid())
+  name       String                 @unique
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+  attributes ProductTypeAttribute[]
+  products   Product[]
+}
+
+enum AttributeKind {
+  TEXT
+  NUMBER
+  BOOLEAN
+  SELECT
+  MULTISELECT
+  COLOR
+}
+
+model AttributeDefinition {
+  id                 String                  @id @default(cuid())
+  key                String                  @unique
+  label              String
+  kind               AttributeKind
+  /// SELECT / MULTISELECT için seçenekler
+  options            String[]
+  unit               String?
+  isFilterable       Boolean                 @default(false)
+  isVisibleOnProduct Boolean                 @default(true)
+  position           Int                     @default(0)
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  productTypes       ProductTypeAttribute[]
+  values             ProductAttributeValue[]
+}
+
+model ProductTypeAttribute {
+  productTypeId String
+  productType   ProductType         @relation(fields: [productTypeId], references: [id], onDelete: Cascade)
+  attributeId   String
+  attribute     AttributeDefinition @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  position      Int                 @default(0)
+  isRequired    Boolean             @default(false)
+
+  @@id([productTypeId, attributeId])
+}
+
+model ProductAttributeValue {
+  id          String              @id @default(cuid())
+  productId   String
+  product     Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  attributeId String
+  attribute   AttributeDefinition @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  valueText   String?
+  valueNumber Float?
+  valueBool   Boolean?
+  valueList   String[]
+
+  @@unique([productId, attributeId])
+  @@index([attributeId, valueText])
+}
+
+model TaxClass {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  /// Baz puan: 2000 = %20
+  rateBps   Int
+  isDefault Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  products  Product[]
+}
+
+model PriceList {
+  id              String           @id @default(cuid())
+  name            String
+  description     String?
+  customerGroupId String?
+  customerGroup   CustomerGroup?   @relation(fields: [customerGroupId], references: [id], onDelete: SetNull)
+  startsAt        DateTime?
+  endsAt          DateTime?
+  isActive        Boolean          @default(true)
+  /// Birden fazla liste geçerliyse yüksek öncelik kazanır
+  priority        Int              @default(0)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  prices          PriceListPrice[]
+}
+
+model PriceListPrice {
+  id          String         @id @default(cuid())
+  priceListId String
+  priceList   PriceList      @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  variantId   String
+  variant     ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  price       Int
+
+  @@unique([priceListId, variantId])
+  @@index([variantId])
+}

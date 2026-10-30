@@ -1,0 +1,149 @@
+// XML entegrasyonu: tedarikçi kaynakları (içe aktarma) ve dışa aktarma feed'leri
+
+enum FeedSourceKind {
+  URL
+  FILE
+}
+
+enum FeedMatchKey {
+  SKU
+  BARCODE
+  SUPPLIER_CODE
+}
+
+enum FeedMissingPolicy {
+  IGNORE
+  ZERO_STOCK
+  DRAFT
+}
+
+enum FeedUnmatchedCategoryPolicy {
+  SKIP
+  DEFAULT
+  CREATE
+}
+
+model FeedSource {
+  id                       String                      @id @default(cuid())
+  name                     String
+  kind                     FeedSourceKind
+  url                      String?
+  /// none | basic | header
+  authType                 String                      @default("none")
+  authUser                 String?
+  authPassword             String?
+  /// Ek HTTP başlıkları: { "X-Api-Key": "..." }
+  headers                  Json?
+  /// Yüklenen son dosyanın depolama anahtarı
+  fileKey                  String?
+  /// Ürün düğümünün yolu, örn. "Urunler.Urun"
+  itemPath                 String?
+  /// Alan eşleştirmesi, bkz. src/modules/xml/schemas.ts
+  mapping                  Json?
+  /// Fiyat/stok/metin dönüşüm kuralları
+  transform                Json?
+  /// Alan bazında güncelleme politikası
+  updatePolicy             Json?
+  matchKey                 FeedMatchKey                @default(SKU)
+  missingPolicy            FeedMissingPolicy           @default(ZERO_STOCK)
+  unmatchedCategoryPolicy  FeedUnmatchedCategoryPolicy @default(SKIP)
+  defaultCategoryId        String?
+  warehouseId              String?
+  /// Yeni oluşturulan ürünlerin durumu
+  createAsStatus           ProductStatus               @default(DRAFT)
+  /// Dakika cinsinden periyot, null ise sadece elle
+  scheduleMinutes          Int?
+  nextRunAt                DateTime?
+  lastRunAt                DateTime?
+  lastStatus               String?
+  isActive                 Boolean                     @default(true)
+  createdAt                DateTime                    @default(now())
+  updatedAt                DateTime                    @updatedAt
+  categoryMaps             FeedCategoryMap[]
+  runs                     FeedRun[]
+  links                    ProductSourceLink[]
+}
+
+model FeedCategoryMap {
+  id             String     @id @default(cuid())
+  sourceId       String
+  source         FeedSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceCategory String
+  categoryId     String?
+  category       Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  /// Son okumada bu kategoride kaç ürün vardı
+  itemCount      Int        @default(0)
+
+  @@unique([sourceId, sourceCategory])
+}
+
+enum FeedRunMode {
+  PREVIEW
+  APPLY
+}
+
+enum FeedRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model FeedRun {
+  id         String        @id @default(cuid())
+  sourceId   String
+  source     FeedSource    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  mode       FeedRunMode
+  status     FeedRunStatus @default(QUEUED)
+  /// manual | schedule
+  trigger    String        @default("manual")
+  /// { total, created, updated, unchanged, skipped, failed, missing }
+  stats      Json?
+  /// İlk N satır hatası: [{ externalId, message }]
+  errors     Json?
+  /// PREVIEW modunda örnek değişiklik listesi
+  sample     Json?
+  message    String?
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime      @default(now())
+
+  @@index([sourceId, createdAt])
+}
+
+model ProductSourceLink {
+  id         String     @id @default(cuid())
+  sourceId   String
+  source     FeedSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  externalId String
+  /// Son içeri alınan verinin özeti; değişmediyse güncelleme atlanır
+  lastHash   String?
+  lastSeenAt DateTime   @default(now())
+
+  @@unique([sourceId, externalId])
+  @@index([productId])
+}
+
+enum ExportFeedFormat {
+  GOOGLE
+  META
+  CUSTOM
+}
+
+model ExportFeed {
+  id              String           @id @default(cuid())
+  name            String
+  format          ExportFeedFormat
+  /// URL'deki gizli anahtar: /feeds/<token>.xml
+  token           String           @unique
+  /// Ürün filtresi: { categoryIds, brandIds, collectionIds, inStockOnly }
+  filters         Json
+  /// CUSTOM format şablonu
+  template        Json?
+  isActive        Boolean          @default(true)
+  lastGeneratedAt DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+}

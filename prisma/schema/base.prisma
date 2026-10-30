@@ -1,0 +1,12 @@
+// Çoklu şema dosyası: her modül kendi .prisma dosyasına sahip.
+// Ortak generator ve datasource sadece burada tanımlıdır.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}

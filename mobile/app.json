@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Eticaret Yönetim",
+    "slug": "eticaret-admin",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "eticaretadmin",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#fafaf9"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.area42.eticaret.admin"
+    },
+    "android": {
+      "package": "com.area42.eticaret.admin",
+      "adaptiveIcon": {
+        "backgroundColor": "#fafaf9",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}

@@ -1,0 +1,162 @@
+// Kişiselleştirme: ziyaretçi, olaylar, ilgi profili, segmentler, reklam eşleme, öneriler, öne çıkarma, A/B
+
+model Visitor {
+  /// Çerezdeki anonim ziyaretçi kimliği
+  id           String                 @id
+  customerId   String?
+  customer     Customer?              @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  /// Kalıcı profil için çerez onayı verildi mi
+  consent      Boolean                @default(false)
+  firstTouch   Json?
+  lastTouch    Json?
+  deviceType   String?
+  city         String?
+  sessionCount Int                    @default(1)
+  firstSeenAt  DateTime               @default(now())
+  lastSeenAt   DateTime               @default(now())
+  events       VisitorEvent[]
+  affinities   VisitorAffinity[]
+  assignments  ExperimentAssignment[]
+
+  @@index([customerId])
+  @@index([lastSeenAt])
+}
+
+model VisitorEvent {
+  id         String   @id @default(cuid())
+  visitorId  String
+  visitor    Visitor  @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  /// landing | view_product | view_category | search | add_to_cart | remove_from_cart |
+  /// begin_checkout | purchase | wishlist | block_impression | block_click
+  type       String
+  productId  String?
+  categoryId String?
+  /// Arama sorgusu, sipariş id vb.
+  value      String?
+  meta       Json?
+  createdAt  DateTime @default(now())
+
+  @@index([visitorId, createdAt])
+  @@index([type, createdAt])
+  @@index([productId, type])
+}
+
+model VisitorAffinity {
+  visitorId String
+  visitor   Visitor  @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  /// category | brand | tag | price_band | attr:<key>
+  dimension String
+  key       String
+  /// Zamanla azalan puan; updatedAt'e göre okunurken azaltılır
+  score     Float
+  updatedAt DateTime @updatedAt
+
+  @@id([visitorId, dimension, key])
+  @@index([visitorId, score])
+}
+
+model Segment {
+  id          String             @id @default(cuid())
+  name        String
+  description String?
+  /// Kural ağacı, bkz. src/modules/personalization/segments.ts
+  rules       Json
+  /// Birden fazla segmente uyan ziyaretçide yüksek öncelik önce gelir
+  priority    Int                @default(0)
+  isActive    Boolean            @default(true)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  adMappings  AdMapping[]
+  variants    HomeBlockVariant[]
+  merchRules  MerchRule[]
+}
+
+model AdMapping {
+  id                 String   @id @default(cuid())
+  name               String
+  /// META | GOOGLE | TIKTOK | OTHER
+  platform           String
+  /// ad_id | adset_id | campaign_id | utm_campaign | utm_content | utm_source | utm_term
+  matchField         String
+  matchValue         String
+  segmentId          String?
+  segment            Segment? @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+  /// Bu reklamdan gelen ziyaretçiye ilk gösterilecek ürünler
+  featuredProductIds String[]
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([matchField, matchValue])
+}
+
+model ProductAssociation {
+  productId        String
+  relatedProductId String
+  /// CO_VIEW | CO_PURCHASE
+  kind             String
+  score            Float
+  updatedAt        DateTime @updatedAt
+
+  @@id([productId, relatedProductId, kind])
+  @@index([productId, kind, score])
+}
+
+model MerchRule {
+  id         String    @id @default(cuid())
+  name       String
+  segmentId  String?
+  segment    Segment?  @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+  /// HOME | CATEGORY | SEARCH | ALL
+  scope      String    @default("ALL")
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  /// Arama kapsamında hangi sorgularda
+  searchTerm String?
+  /// PIN | BOOST | BURY | HIDE
+  action     String
+  productIds String[]
+  /// BOOST/BURY çarpanı
+  weight     Float     @default(1)
+  startsAt   DateTime?
+  endsAt     DateTime?
+  isActive   Boolean   @default(true)
+  priority   Int       @default(0)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+enum ExperimentStatus {
+  DRAFT
+  RUNNING
+  PAUSED
+  COMPLETED
+}
+
+model Experiment {
+  id          String                 @id @default(cuid())
+  name        String
+  blockId     String
+  block       HomeBlock              @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  status      ExperimentStatus       @default(DRAFT)
+  /// block_click | add_to_cart | purchase
+  goal        String                 @default("purchase")
+  startedAt   DateTime?
+  endedAt     DateTime?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+  variants    HomeBlockVariant[]
+  assignments ExperimentAssignment[]
+}
+
+model ExperimentAssignment {
+  experimentId String
+  experiment   Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  visitorId    String
+  visitor      Visitor    @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  variantId    String
+  createdAt    DateTime   @default(now())
+
+  @@id([experimentId, visitorId])
+  @@index([experimentId, variantId])
+}

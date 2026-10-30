@@ -1,0 +1,151 @@
+// İçerik: sayfalar, menüler, ana sayfa blokları, medya, yorumlar, yönlendirmeler
+
+enum PageStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model Page {
+  id             String     @id @default(cuid())
+  title          String
+  slug           String     @unique
+  content        String     @default("")
+  status         PageStatus @default(DRAFT)
+  seoTitle       String?
+  seoDescription String?
+  /// Yasal sayfalar (KVKK, mesafeli satış vb.) silinemez
+  isSystem       Boolean    @default(false)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+}
+
+model Menu {
+  id     String     @id @default(cuid())
+  /// header | footer | ...
+  handle String     @unique
+  name   String
+  items  MenuItem[]
+}
+
+enum MenuItemType {
+  URL
+  CATEGORY
+  COLLECTION
+  PAGE
+  PRODUCT
+  BRAND
+}
+
+model MenuItem {
+  id           String       @id @default(cuid())
+  menuId       String
+  menu         Menu         @relation(fields: [menuId], references: [id], onDelete: Cascade)
+  parentId     String?
+  parent       MenuItem?    @relation("MenuTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children     MenuItem[]   @relation("MenuTree")
+  label        String
+  type         MenuItemType
+  targetId     String?
+  url          String?
+  position     Int          @default(0)
+  openInNewTab Boolean      @default(false)
+
+  @@index([menuId])
+}
+
+model HomeBlock {
+  id        String             @id @default(cuid())
+  /// Aynı blok sistemiyle birden fazla sayfa yönetilebilir: home | landing:<slug>
+  page      String             @default("home")
+  /// Blok tipi, bkz. src/modules/content/blocks.ts
+  type      String
+  /// Panelde görünen ad
+  name      String
+  position  Int                @default(0)
+  isActive  Boolean            @default(true)
+  startsAt  DateTime?
+  endsAt    DateTime?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  variants  HomeBlockVariant[]
+  experiments Experiment[]
+
+  @@index([page, position])
+}
+
+model HomeBlockVariant {
+  id           String      @id @default(cuid())
+  blockId      String
+  block        HomeBlock   @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  name         String
+  /// Null ise varsayılan varyant (herkese)
+  segmentId    String?
+  segment      Segment?    @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+  /// A/B testine bağlıysa
+  experimentId String?
+  experiment   Experiment? @relation(fields: [experimentId], references: [id], onDelete: SetNull)
+  /// A/B testinde trafik payı
+  weight       Int         @default(50)
+  /// Blok tipine özgü ayarlar
+  config       Json
+  /// true ise bu segment için blok gösterilmez
+  isHidden     Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([blockId])
+}
+
+model MediaAsset {
+  id        String   @id @default(cuid())
+  url       String
+  /// Depolama anahtarı (local yol veya S3 key)
+  key       String   @unique
+  filename  String
+  mimeType  String
+  size      Int
+  width     Int?
+  height    Int?
+  alt       String?
+  folder    String?
+  createdAt DateTime @default(now())
+
+  @@index([folder])
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Review {
+  id                 String       @id @default(cuid())
+  productId          String
+  product            Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  customerId         String?
+  customer           Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  orderId            String?
+  authorName         String
+  rating             Int
+  title              String?
+  body               String
+  status             ReviewStatus @default(PENDING)
+  isVerifiedPurchase Boolean      @default(false)
+  reply              String?
+  repliedAt          DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@index([productId, status])
+  @@index([status])
+}
+
+model Redirect {
+  id         String   @id @default(cuid())
+  fromPath   String   @unique
+  toPath     String
+  statusCode Int      @default(301)
+  hits       Int      @default(0)
+  createdAt  DateTime @default(now())
+}

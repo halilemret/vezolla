@@ -1,0 +1,95 @@
+// Stok: depolar, stok seviyeleri, hareketler, rezervasyonlar
+
+model Warehouse {
+  id        String           @id @default(cuid())
+  name      String
+  code      String           @unique
+  address   String?
+  isActive  Boolean          @default(true)
+  isDefault Boolean          @default(false)
+  /// Sipariş rezervasyonunda düşük sayı önce kullanılır
+  priority  Int              @default(0)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  levels    InventoryLevel[]
+  movements StockMovement[]
+}
+
+model InventoryLevel {
+  id                String         @id @default(cuid())
+  variantId         String
+  variant           ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  warehouseId       String
+  warehouse         Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  onHand            Int            @default(0)
+  reserved          Int            @default(0)
+  lowStockThreshold Int?
+  updatedAt         DateTime       @updatedAt
+
+  @@unique([variantId, warehouseId])
+  @@index([warehouseId])
+}
+
+enum StockMovementType {
+  RECEIVE
+  SALE
+  RETURN
+  ADJUST
+  COUNT
+  TRANSFER_IN
+  TRANSFER_OUT
+  IMPORT
+}
+
+model StockMovement {
+  id            String            @id @default(cuid())
+  variantId     String
+  variant       ProductVariant    @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  warehouseId   String
+  warehouse     Warehouse         @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  type          StockMovementType
+  /// İşaretli miktar: giriş +, çıkış -
+  quantity      Int
+  balanceAfter  Int
+  reason        String?
+  referenceType String?
+  referenceId   String?
+  staffUserId   String?
+  createdAt     DateTime          @default(now())
+
+  @@index([variantId, createdAt])
+  @@index([referenceType, referenceId])
+}
+
+enum ReservationStatus {
+  ACTIVE
+  CONSUMED
+  RELEASED
+}
+
+model StockReservation {
+  id          String            @id @default(cuid())
+  orderId     String
+  order       Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variantId   String
+  warehouseId String
+  quantity    Int
+  status      ReservationStatus @default(ACTIVE)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@index([orderId])
+  @@index([variantId, status])
+}
+
+model BackInStockRequest {
+  id         String         @id @default(cuid())
+  variantId  String
+  variant    ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  email      String
+  customerId String?
+  notifiedAt DateTime?
+  createdAt  DateTime       @default(now())
+
+  @@unique([variantId, email])
+}

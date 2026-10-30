@@ -1,0 +1,150 @@
+// Sistem: ayarlar, denetim kaydı, olaylar, iş kuyruğu, e-posta, bildirimler
+
+model Setting {
+  /// Ayar grubu anahtarı, bkz. src/lib/settings/schemas.ts
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id          String     @id @default(cuid())
+  staffUserId String?
+  staffUser   StaffUser? @relation(fields: [staffUserId], references: [id], onDelete: SetNull)
+  /// product.update, order.refund ...
+  action      String
+  entityType  String
+  entityId    String?
+  summary     String?
+  before      Json?
+  after       Json?
+  ip          String?
+  createdAt   DateTime   @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@index([staffUserId])
+}
+
+enum DomainEventStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+model DomainEvent {
+  id          String            @id @default(cuid())
+  name        String
+  payload     Json
+  status      DomainEventStatus @default(PENDING)
+  attempts    Int               @default(0)
+  error       String?
+  createdAt   DateTime          @default(now())
+  processedAt DateTime?
+
+  @@index([status, createdAt])
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+}
+
+model Job {
+  id          String    @id @default(cuid())
+  type        String
+  payload     Json
+  status      JobStatus @default(QUEUED)
+  runAt       DateTime  @default(now())
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  lastError   String?
+  lockedAt    DateTime?
+  lockedBy    String?
+  result      Json?
+  /// Aynı anahtarla kuyrukta bekleyen ikinci iş oluşturulmaz
+  dedupeKey   String?
+  createdAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  @@index([status, runAt])
+  @@index([dedupeKey, status])
+}
+
+model EmailTemplate {
+  id        String   @id @default(cuid())
+  /// order_placed, order_shipped, ...
+  key       String   @unique
+  name      String
+  subject   String
+  bodyHtml  String
+  isActive  Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  FAILED
+  /// SMTP ayarlı değil, sadece kaydedildi
+  LOGGED
+}
+
+model EmailMessage {
+  id          String      @id @default(cuid())
+  to          String
+  subject     String
+  html        String
+  templateKey String?
+  status      EmailStatus @default(QUEUED)
+  error       String?
+  sentAt      DateTime?
+  createdAt   DateTime    @default(now())
+
+  @@index([createdAt])
+}
+
+model AdminNotification {
+  id        String    @id @default(cuid())
+  type      String
+  title     String
+  body      String?
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([readAt, createdAt])
+}
+
+model StaffPushToken {
+  id          String   @id @default(cuid())
+  staffUserId String?
+  token       String   @unique
+  platform    String?  // ios | android | web
+  deviceInfo  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([staffUserId])
+}
+
+model SavedView {
+  id          String    @id @default(cuid())
+  staffUserId String
+  staffUser   StaffUser @relation(fields: [staffUserId], references: [id], onDelete: Cascade)
+  /// products | orders | customers ...
+  resource    String
+  name        String
+  /// URL query string
+  query       String
+  createdAt   DateTime  @default(now())
+
+  @@index([staffUserId, resource])
+}
+
+model Counter {
+  key   String @id
+  value Int
+}
