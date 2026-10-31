@@ -140,6 +140,14 @@ export default async function AdminReturnsPage({
                       Sipariş #{ret.order.number}
                     </Link>
                     {renderReturnStatusBadge(ret.status)}
+                    {ret.returnCode && (
+                      <Badge variant="accent" className="font-mono font-bold">
+                        İade Kodu: {ret.returnCode} ({ret.carrierCode || "YURTICI"})
+                      </Badge>
+                    )}
+                    <Badge variant={ret.hygieneAccepted ? "success" : "warning"}>
+                      {ret.hygieneAccepted ? "Hijyen İstisnası Onaylı (m.15/ç)" : "Hijyen Onayı Alınmamış"}
+                    </Badge>
                     <span className="text-zinc-600">
                       Müşteri: <strong className="text-zinc-900">{customerName}</strong>
                     </span>

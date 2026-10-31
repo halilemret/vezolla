@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { Star, CheckCircle as CheckCircle2 } from "@phosphor-icons/react/dist/ssr";
 import { db } from "@/lib/db";
 import { getCurrentCustomer } from "@/lib/auth/session";
+import { getInstallmentSettings, getClubSettings } from "@/lib/settings/service";
 import { resolveEffectiveVariantPrice } from "@/modules/checkout/cart";
 import { getRecommendedProducts } from "@/modules/personalization/recommendations";
 import { ProductViewBeacon } from "@/components/store/visitor-tracker";
@@ -11,10 +12,12 @@ import { ProductCard } from "@/components/store/product-card";
 import { Badge } from "@/components/ui/badge";
 import {
   ProductDetailClient,
-  ProductReviewForm,
   type ClientProductOption,
   type ClientProductVariant,
 } from "./product-detail-client";
+import { BundleSection, type BundleItem } from "@/components/store/bundle-section";
+import { ProductReviewsFiltered } from "@/components/store/product-reviews-filtered";
+import { ProductAccordion } from "@/components/store/product-accordion";
 
 interface ProductPageProps {
   params: Promise<{ slug: string }>;
@@ -49,7 +52,8 @@ export async function generateMetadata({
 export default async function ProductDetailPage({ params }: ProductPageProps) {
   const { slug } = await params;
 
-  const [product, customer] = await Promise.all([
+  const [product, customer, installmentSettings, clubSettings] =
+    await Promise.all([
     db.product.findUnique({
       where: { slug },
       include: {
@@ -115,6 +119,8 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
       },
     }),
     getCurrentCustomer(),
+    getInstallmentSettings(),
+    getClubSettings(),
   ]);
 
   if (!product || product.deletedAt !== null || product.status !== "ACTIVE") {
@@ -172,6 +178,7 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
       barcode: v.barcode,
       effectivePrice,
       compareAtPrice: v.compareAtPrice,
+      clubPrice: v.clubPrice ?? product.clubPrice ?? null,
       availableStock,
       trackInventory: v.trackInventory,
       allowBackorder: v.allowBackorder,
@@ -180,14 +187,63 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
     };
   });
 
-  const associatedProducts = await getRecommendedProducts({
-    source: "associated",
-    productIds: [product.id],
-    limit: 5,
+  // Kombini Tamamla: Aynı veya bağlı kategoriden ürünleri eşle
+  const currentCategoryIds = product.categories.map((c) => c.categoryId);
+  let bundleCandidates = await db.product.findMany({
+    where: {
+      id: { not: product.id },
+      status: "ACTIVE",
+      deletedAt: null,
+      totalStock: { gt: 0 },
+      categories: {
+        some: {
+          categoryId: { in: currentCategoryIds },
+        },
+      },
+    },
+    take: 4,
+    orderBy: [{ totalStock: "desc" }, { createdAt: "desc" }],
+    include: {
+      brand: { select: { name: true } },
+      images: { orderBy: { position: "asc" }, take: 1 },
+      variants: { where: { isActive: true }, take: 1 },
+    },
   });
-  const relatedList = associatedProducts
-    .filter((p) => p.id !== product.id)
-    .slice(0, 4);
+
+  if (bundleCandidates.length < 2) {
+    const fallbackCandidates = await db.product.findMany({
+      where: {
+        id: { not: product.id },
+        status: "ACTIVE",
+        deletedAt: null,
+        totalStock: { gt: 0 },
+      },
+      take: 4,
+      orderBy: { createdAt: "desc" },
+      include: {
+        brand: { select: { name: true } },
+        images: { orderBy: { position: "asc" }, take: 1 },
+        variants: { where: { isActive: true }, take: 1 },
+      },
+    });
+    bundleCandidates = [
+      ...bundleCandidates,
+      ...fallbackCandidates.filter((f) => !bundleCandidates.some((b) => b.id === f.id)),
+    ].slice(0, 4);
+  }
+
+  const relatedList = bundleCandidates.map((p) => ({
+    id: p.id,
+    title: p.title,
+    slug: p.slug,
+    subtitle: p.subtitle,
+    minPrice: p.minPrice ?? 0,
+    maxPrice: p.maxPrice ?? 0,
+    totalStock: p.totalStock ?? 0,
+    brand: p.brand,
+    images: p.images,
+    variants: p.variants,
+  }));
 
   const avgRating =
     product.reviews.length > 0
@@ -286,172 +342,115 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
           variants={clientVariants}
           initialWishlisted={wishlistedCount > 0}
           customerEmail={customer?.email ?? null}
+          installmentSettings={installmentSettings}
+          sizeGuideType={product.sizeGuideType}
+          sizeGuideData={product.sizeGuideData}
+          categoryName={primaryCategory?.name ?? null}
+          productClubPrice={product.clubPrice}
+          isCustomerLoggedIn={Boolean(customer)}
+          clubSettings={clubSettings}
         />
       </div>
 
       <div className="mt-10 sm:mt-12 space-y-10 sm:space-y-12">
-        {/* Açıklama ve Teknik Özellikler */}
-        <div className="grid grid-cols-1 gap-8 border-t border-border pt-10 lg:grid-cols-12">
-        <div className="lg:col-span-7 space-y-4">
+        {/* Açıklama, Özellikler ve Gizli Paketleme Açılır Sekmeler */}
+        <section className="border-t border-border pt-8">
+          <ProductAccordion
+            description={product.description}
+            attributes={product.attributes.map((attr) => {
+              let displayValue = attr.valueText ?? "";
+              if (
+                attr.attribute.kind === "NUMBER" &&
+                attr.valueNumber !== null
+              ) {
+                displayValue = `${attr.valueNumber}${
+                  attr.attribute.unit ? ` ${attr.attribute.unit}` : ""
+                }`;
+              } else if (
+                attr.attribute.kind === "BOOLEAN" &&
+                attr.valueBool !== null
+              ) {
+                displayValue = attr.valueBool ? "Evet" : "Hayır";
+              } else if (attr.valueList.length > 0) {
+                displayValue = attr.valueList.join(", ");
+              }
+              return {
+                id: attr.id,
+                label: attr.attribute.label,
+                value: displayValue || "-",
+              };
+            })}
+            brandName={product.brand?.name ?? null}
+            categoryName={primaryCategory?.name ?? null}
+          />
+        </section>
+
+      {/* Kombini Tamamla (Bundle / Frequently Bought Together) */}
+      {relatedList.length > 0 && (
+        <section className="border-t border-border pt-10">
+          <BundleSection
+            mainProduct={{
+              id: product.id,
+              title: product.title,
+              slug: product.slug,
+              variantId: clientVariants[0]?.id ?? "",
+              variantTitle: clientVariants[0]?.title ?? null,
+              price: clientVariants[0]?.effectivePrice ?? product.minPrice ?? 0,
+              compareAtPrice: clientVariants[0]?.compareAtPrice ?? null,
+              imageUrl: product.images[0]?.url ?? null,
+            }}
+            complementaryProducts={relatedList.slice(0, 2).map((rel) => ({
+              id: rel.id,
+              title: rel.title,
+              slug: rel.slug,
+              variantId: rel.variants[0]?.id ?? "",
+              variantTitle: null,
+              price: rel.minPrice ?? 0,
+              compareAtPrice: rel.variants[0]?.compareAtPrice ?? null,
+              imageUrl: rel.images[0]?.url ?? null,
+            }))}
+          />
+        </section>
+      )}
+
+      {/* Müşteri Değerlendirmeleri (Fotoğraflı & Beden/Kalıp Filtreli) */}
+      <section className="border-t border-border pt-10 space-y-6">
+        <div>
           <h2 className="text-lg font-semibold text-foreground">
-            Ürün Açıklaması
+            Müşteri Değerlendirmeleri ({product.reviews.length})
           </h2>
-          {product.description ? (
-            <div
-              className="prose prose-sm max-w-none text-foreground/90 leading-relaxed space-y-3"
-              dangerouslySetInnerHTML={{ __html: product.description }}
-            />
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              Bu ürün için detaylı açıklama yakında eklenecektir.
+          {avgRating !== null && (
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Ortalama Puan: {avgRating.toFixed(1)} / 5.0
             </p>
           )}
         </div>
 
-        <div className="lg:col-span-5 space-y-4">
-          <h2 className="text-lg font-semibold text-foreground">
-            Ürün Özellikleri
-          </h2>
-          {product.attributes.length > 0 ? (
-            <div className="overflow-hidden rounded-lg border border-border">
-              <table className="w-full text-sm">
-                <tbody className="divide-y divide-border">
-                  {product.attributes.map((attr) => {
-                    let displayValue = attr.valueText ?? "";
-                    if (
-                      attr.attribute.kind === "NUMBER" &&
-                      attr.valueNumber !== null
-                    ) {
-                      displayValue = `${attr.valueNumber}${
-                        attr.attribute.unit ? ` ${attr.attribute.unit}` : ""
-                      }`;
-                    } else if (
-                      attr.attribute.kind === "BOOLEAN" &&
-                      attr.valueBool !== null
-                    ) {
-                      displayValue = attr.valueBool ? "Evet" : "Hayır";
-                    } else if (attr.valueList.length > 0) {
-                      displayValue = attr.valueList.join(", ");
-                    }
-
-                    return (
-                      <tr key={attr.id} className="bg-card">
-                        <th className="w-2/5 bg-muted/40 px-3.5 py-2.5 text-left font-medium text-muted-foreground">
-                          {attr.attribute.label}
-                        </th>
-                        <td className="px-3.5 py-2.5 text-foreground">
-                          {displayValue || "-"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="rounded-lg border border-border bg-card p-4 text-xs text-muted-foreground space-y-1.5">
-              <p>
-                <span className="font-medium text-foreground">Kategori:</span>{" "}
-                {primaryCategory?.name ?? "Genel"}
-              </p>
-              {product.brand && (
-                <p>
-                  <span className="font-medium text-foreground">Marka:</span>{" "}
-                  {product.brand.name}
-                </p>
-              )}
-              {clientVariants[0]?.sku && (
-                <p>
-                  <span className="font-medium text-foreground">Stok Kodu:</span>{" "}
-                  {clientVariants[0].sku}
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Müşteri Değerlendirmeleri */}
-      <section className="border-t border-border pt-10 space-y-6">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-semibold text-foreground">
-              Müşteri Değerlendirmeleri ({product.reviews.length})
-            </h2>
-            {avgRating !== null && (
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Ortalama Puan: {avgRating.toFixed(1)} / 5.0
-              </p>
-            )}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
-          <div className="lg:col-span-7 space-y-3">
-            {product.reviews.length === 0 ? (
-              <div className="rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">
-                Bu ürün için henüz onaylanmış bir değerlendirme bulunmuyor. İlk
-                değerlendirmeyi siz yazabilirsiniz.
-              </div>
-            ) : (
-              product.reviews.map((rev) => (
-                <div
-                  key={rev.id}
-                  className="rounded-lg border border-border bg-card p-4 space-y-2"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-foreground">
-                        {rev.authorName}
-                      </span>
-                      {rev.isVerifiedPurchase && (
-                        <Badge variant="success" className="gap-1">
-                          <CheckCircle2 className="h-3 w-3" />
-                          Doğrulanmış Alıcı
-                        </Badge>
-                      )}
-                    </div>
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(rev.createdAt).toLocaleDateString("tr-TR")}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-0.5">
-                    {[1, 2, 3, 4, 5].map((s) => (
-                      <Star
-                        key={s}
-                        className={`h-3.5 w-3.5 ${
-                          s <= rev.rating
-                            ? "fill-warning text-warning"
-                            : "text-muted-foreground"
-                        }`}
-                      />
-                    ))}
-                  </div>
-
-                  {rev.title && (
-                    <p className="text-sm font-medium text-foreground">
-                      {rev.title}
-                    </p>
-                  )}
-                  <p className="text-sm text-muted-foreground">{rev.body}</p>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="lg:col-span-5">
-            <ProductReviewForm
-              productId={product.id}
-              productSlug={product.slug}
-              defaultAuthorName={
-                customer
-                  ? `${customer.firstName} ${customer.lastName}`.trim()
-                  : undefined
-              }
-            />
-          </div>
-        </div>
+        <ProductReviewsFiltered
+          productId={product.id}
+          productSlug={product.slug}
+          reviews={product.reviews.map((rev) => ({
+            id: rev.id,
+            authorName: rev.authorName,
+            rating: rev.rating,
+            title: rev.title,
+            body: rev.body,
+            createdAt: rev.createdAt,
+            isVerifiedPurchase: rev.isVerifiedPurchase,
+            heightCm: rev.heightCm,
+            weightKg: rev.weightKg,
+            sizePurchased: rev.sizePurchased,
+            fitRating: rev.fitRating,
+            images: rev.images,
+            reply: rev.reply,
+          }))}
+          defaultAuthorName={
+            customer
+              ? `${customer.firstName} ${customer.lastName}`.trim()
+              : undefined
+          }
+          availableSizes={clientVariants.map((v) => v.title)}
+        />
       </section>
 
       {/* İlişkili / Birlikte İncelenen Ürünler */}
@@ -489,6 +488,8 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
                   brandName: rel.brand?.name ?? null,
                   imageUrl: rel.images[0]?.url ?? null,
                   compareAtPrice: rel.variants[0]?.compareAtPrice ?? null,
+                  clubPrice: rel.variants[0]?.clubPrice ?? null,
+                  variants: rel.variants,
                 }}
               />
             ))}

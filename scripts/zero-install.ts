@@ -44,6 +44,7 @@ async function main() {
   await db.orderEvent.deleteMany();
   await db.orderItem.deleteMany();
   await db.order.deleteMany();
+  await db.shippingMethod.deleteMany();
 
   // 2. Sepet ve Promosyon Verileri
   await db.cartItem.deleteMany();
@@ -519,6 +520,21 @@ async function main() {
       type: "PAGE",
       url: "/sayfa/iletisim",
       position: 3,
+    },
+  });
+
+  // 17.5. Standart Kargo Yöntemi (1.500 TL üzeri ücretsiz kargo baremi)
+  await db.shippingMethod.create({
+    data: {
+      name: "Standart Kargo (Yurtiçi / Aras)",
+      description: "1.500 TL ve üzeri siparişlerde kargo ücretsiz",
+      carrier: "yurtici",
+      price: 7990,
+      freeOverAmount: 150000,
+      cities: [],
+      estimatedDays: "1-3 iş günü",
+      isActive: true,
+      position: 0,
     },
   });
 

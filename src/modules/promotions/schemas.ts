@@ -2,8 +2,10 @@ import { z } from "zod";
 
 export const promotionConditionsSchema = z.object({
   minSubtotalMinor: z.number().int().min(0).optional(),
+  minItemCount: z.number().int().min(1).optional(),
   categoryIds: z.array(z.string()).default([]),
   productIds: z.array(z.string()).default([]),
+  variantIds: z.array(z.string()).default([]),
   customerGroupIds: z.array(z.string()).default([]),
   customerEmails: z.array(z.string().trim().toLowerCase()).default([]),
   customerIds: z.array(z.string().trim()).default([]),
@@ -15,6 +17,7 @@ export type PromotionConditions = z.infer<typeof promotionConditionsSchema>;
 export const DEFAULT_PROMOTION_CONDITIONS: PromotionConditions = {
   categoryIds: [],
   productIds: [],
+  variantIds: [],
   customerGroupIds: [],
   customerEmails: [],
   customerIds: [],

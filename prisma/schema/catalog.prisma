@@ -33,6 +33,12 @@ model Product {
   salesCount     Int            @default(0)
   viewCount      Int            @default(0)
   ratingAvg      Float?
+  /// VezollaClub üyelerine özel indirimli fiyat (minor cinsinden)
+  clubPrice      Int?
+  /// Beden tablosu türü: NONE | BRA | CLOTHING | CUSTOM
+  sizeGuideType  String?        @default("CLOTHING")
+  /// Özel beden tablosu HTML veya JSON formatında
+  sizeGuideData  String?
   ratingCount    Int            @default(0)
   /// Arama için birleştirilmiş metin (başlık, marka, SKU, etiketler)
   searchText     String?
@@ -92,6 +98,8 @@ model ProductVariant {
   supplierCode   String?
   price          Int
   compareAtPrice Int?
+  /// VezollaClub üyelerine özel indirimli fiyat (minor cinsinden)
+  clubPrice      Int?
   costPrice      Int?
   weightGrams    Int?
   position       Int           @default(0)

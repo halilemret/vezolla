@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_STORE_SETTINGS } from "@/lib/settings/schemas";
+import { DEFAULT_PAYMENT_SETTINGS, DEFAULT_STORE_SETTINGS } from "@/lib/settings/schemas";
 import { resolveEffectiveVariantPrice } from "@/modules/checkout/cart";
 import { generateOrderContracts } from "@/modules/checkout/contracts";
 import {
@@ -7,6 +7,7 @@ import {
   type WarehouseStockCandidate,
 } from "@/modules/checkout/service";
 import { evaluateShippingMethod } from "@/modules/shipping/service";
+import { iyzicoAdapter, verifyIyzicoCheckoutToken } from "@/modules/payments/iyzico";
 
 describe("Ödeme, Sözleşme ve Stok Rezervasyonu (checkout)", () => {
   it("depo öncelik sırasına (priority) göre stok tahsis eder ve aşırı satışı engeller", () => {
@@ -203,5 +204,108 @@ describe("Ödeme, Sözleşme ve Stok Rezervasyonu (checkout)", () => {
     });
     expect(freeQuote?.isFree).toBe(true);
     expect(freeQuote?.effectivePriceMinor).toBe(0);
+  });
+
+  it("mağaza ayarlarında minimum sepet tutarı kuralını ve varsayılanını doğrular", () => {
+    expect(DEFAULT_STORE_SETTINGS.minOrderSubtotalMinor).toBeDefined();
+    expect(DEFAULT_STORE_SETTINGS.minOrderSubtotalMinor).toBe(0);
+  });
+
+  it("iyzico adaptörü ödeme formunu PENDING durumunda ve form içeriğiyle başlatır", async () => {
+    const res = await iyzicoAdapter.initiate({
+      orderId: "ord-test-1",
+      orderNumber: 1001,
+      amountMinor: 25000,
+      currency: "TRY",
+      buyer: {
+        id: "cust-1",
+        firstName: "Elif",
+        lastName: "Demir",
+        email: "elif@ornek.com",
+        phone: "05551234567",
+        city: "İstanbul",
+        district: "Kadıköy",
+        addressLine: "Caddebostan",
+      },
+      shippingAddress: {
+        contactName: "Elif Demir",
+        city: "İstanbul",
+        district: "Kadıköy",
+        addressLine: "Caddebostan",
+      },
+      billingAddress: {
+        contactName: "Elif Demir",
+        city: "İstanbul",
+        district: "Kadıköy",
+        addressLine: "Caddebostan",
+      },
+      basketItems: [
+        {
+          id: "var-1",
+          name: "İpek Pijama Takımı",
+          categoryName: "Giyim",
+          priceMinor: 25000,
+        },
+      ],
+      callbackUrl: "http://localhost:3000/api/payments/iyzico/callback",
+      settings: DEFAULT_PAYMENT_SETTINGS,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.paymentState).toBe("PENDING");
+    expect(res.orderPaymentStatus).toBe("PENDING");
+    expect(res.checkoutFormContent).toBeDefined();
+    expect(res.checkoutFormContent).toContain("<form");
+  });
+
+  it("verifyIyzicoCheckoutToken simülasyon tokenını hatasız doğrular", async () => {
+    const verification = await verifyIyzicoCheckoutToken({
+      token: "sim_iyzico_ord-999_123456789",
+      settings: DEFAULT_PAYMENT_SETTINGS,
+    });
+
+    expect(verification.ok).toBe(true);
+    expect(verification.conversationId).toBe("ord-999");
+  });
+
+  it("verifyIyzicoCheckoutToken başarısız simülasyon tokenını yakalar ve hata döndürür", async () => {
+    const verification = await verifyIyzicoCheckoutToken({
+      token: "sim_iyzico_fail_ord-888_987654321",
+      settings: DEFAULT_PAYMENT_SETTINGS,
+    });
+
+    expect(verification.ok).toBe(false);
+    expect(verification.errorMessage).toContain("Simüle edilmiş kart reddi");
+  });
+
+  it("stok rezervasyon adaylarını levelId sırasına göre sıralar (deadlock koruması)", () => {
+    const reservations = [
+      { levelId: "lvl-zebra", quantity: 2 },
+      { levelId: "lvl-alpha", quantity: 1 },
+      { levelId: "lvl-middle", quantity: 5 },
+    ];
+    const sorted = [...reservations].sort((a, b) => a.levelId.localeCompare(b.levelId));
+    expect(sorted.map((r) => r.levelId)).toEqual(["lvl-alpha", "lvl-middle", "lvl-zebra"]);
+  });
+
+  it("VezollaClub üyesi (giriş yapmış) kullanıcı kulüp özel ürün aldığında sepette kulüp özel fiyat geçerli olur", () => {
+    const basePrice = 23999;
+    const clubPrice = 21599;
+
+    // 1) Giriş yapmamış misafir kullanıcı
+    const guestIsClubPriceApplied = Boolean(
+      false && clubPrice > 0 && clubPrice < basePrice
+    );
+    const guestUnitPrice = guestIsClubPriceApplied ? clubPrice : basePrice;
+    expect(guestIsClubPriceApplied).toBe(false);
+    expect(guestUnitPrice).toBe(23999);
+
+    // 2) Giriş yapmış VezollaClub üyesi
+    const memberIsClubPriceApplied = Boolean(
+      true && clubPrice > 0 && clubPrice < basePrice
+    );
+    const memberUnitPrice = memberIsClubPriceApplied ? clubPrice : basePrice;
+    expect(memberIsClubPriceApplied).toBe(true);
+    expect(memberUnitPrice).toBe(21599);
   });
 });

@@ -10,22 +10,36 @@ import { ALL_PERMISSION_KEYS, type PermissionKey } from "@/lib/rbac/permissions"
 import { sendTransactionalEmail } from "@/lib/mail";
 import {
   getConversionSettings,
+  getInstallmentSettings,
+  getClubSettings,
   getPaymentSettings,
   getSeoSettings,
   getStoreSettings,
   getThemeSettings,
   saveConversionSettings,
+  saveInstallmentSettings,
+  saveClubSettings,
   savePaymentSettings,
   saveSeoSettings,
   saveStoreSettings,
   saveThemeSettings,
 } from "@/lib/settings/service";
+import {
+  installmentSettingsSchema,
+  clubSettingsSchema,
+  type InstallmentSettings,
+  type ClubSettings,
+} from "@/lib/settings/schemas";
 
 export async function saveStoreSettingsAction(formData: FormData): Promise<void> {
   const staff = await requireStaff("settings.manage");
   const before = await getStoreSettings();
 
   const retentionRaw = Number(formData.get("visitorRetentionDays") ?? 180);
+  const minOrderSubtotalRaw = String(formData.get("minOrderSubtotalTl") ?? "").trim();
+  const minOrderSubtotalMinor = minOrderSubtotalRaw
+    ? Math.max(0, parseMoneyInput(minOrderSubtotalRaw))
+    : (before.minOrderSubtotalMinor ?? 0);
 
   const after = await saveStoreSettings({
     storeName: String(formData.get("storeName") ?? "").trim() || before.storeName,
@@ -48,6 +62,7 @@ export async function saveStoreSettingsAction(formData: FormData): Promise<void>
       Number.isFinite(retentionRaw) && retentionRaw >= 1 && retentionRaw <= 730
         ? Math.round(retentionRaw)
         : 180,
+    minOrderSubtotalMinor,
   });
 
   await recordAudit({
@@ -792,4 +807,97 @@ export async function saveConversionSettingsAction(formData: FormData): Promise<
   revalidatePath("/");
   revalidatePath("/katalog");
 }
+
+export async function updateInstallmentSettingsAction(
+  input: InstallmentSettings | FormData
+): Promise<{ success: boolean; data?: InstallmentSettings; error?: string }> {
+  const staff = await requireStaff("settings.manage");
+  const before = await getInstallmentSettings();
+
+  let parsed: InstallmentSettings;
+  try {
+    if (input instanceof FormData) {
+      const rawJson = input.get("payload");
+      if (typeof rawJson === "string") {
+        parsed = installmentSettingsSchema.parse(JSON.parse(rawJson));
+      } else {
+        throw new Error("Geçersiz form verisi");
+      }
+    } else {
+      parsed = installmentSettingsSchema.parse(input);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Geçersiz taksit ayarları verisi";
+    return { success: false, error: msg };
+  }
+
+  const after = await saveInstallmentSettings(parsed);
+
+  await recordAudit({
+    staffUserId: staff.id,
+    action: "settings.installment.update",
+    entityType: "Setting",
+    entityId: "installment",
+    summary: `Taksit ayarları ve 6 kart ailesi oranları güncellendi (Durum: ${after.enabled ? "Aktif" : "Pasif"})`,
+    before: before as unknown as Prisma.InputJsonValue,
+    after: after as unknown as Prisma.InputJsonValue,
+  });
+
+  revalidatePath("/admin/ayarlar");
+  revalidatePath("/admin/ayarlar/taksit");
+  revalidatePath("/admin/ayarlar/denetim");
+  revalidatePath("/odeme");
+  revalidatePath("/katalog");
+  revalidatePath("/");
+
+  return { success: true, data: after };
+}
+
+export async function updateClubSettingsAction(
+  input: ClubSettings | FormData
+): Promise<{ success: boolean; data?: ClubSettings; error?: string }> {
+  const staff = await requireStaff("settings.manage");
+  const before = await getClubSettings();
+
+  let parsed: ClubSettings;
+  try {
+    if (input instanceof FormData) {
+      const rawJson = input.get("payload");
+      if (typeof rawJson === "string") {
+        parsed = clubSettingsSchema.parse(JSON.parse(rawJson));
+      } else {
+        throw new Error("Geçersiz form verisi");
+      }
+    } else {
+      parsed = clubSettingsSchema.parse(input);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Geçersiz VezollaClub ayarları verisi";
+    return { success: false, error: msg };
+  }
+
+  const after = await saveClubSettings(parsed);
+
+  await recordAudit({
+    staffUserId: staff.id,
+    action: "settings.vezollaclub.update",
+    entityType: "Setting",
+    entityId: "vezollaclub",
+    summary: `VezollaClub ayarları güncellendi (1 Puan = ${after.pointValueKurus} Kuruş, Durum: ${after.enabled ? "Aktif" : "Pasif"})`,
+    before: before as unknown as Prisma.InputJsonValue,
+    after: after as unknown as Prisma.InputJsonValue,
+  });
+
+  revalidatePath("/admin/ayarlar");
+  revalidatePath("/admin/ayarlar/vezollaclub");
+  revalidatePath("/admin/ayarlar/denetim");
+  revalidatePath("/hesabim");
+  revalidatePath("/odeme");
+  revalidatePath("/sepet");
+  revalidatePath("/katalog");
+  revalidatePath("/");
+
+  return { success: true, data: after };
+}
+
 

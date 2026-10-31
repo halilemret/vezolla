@@ -2,6 +2,7 @@ import "server-only";
 import crypto from "crypto";
 import { db } from "@/lib/db";
 import { sendTransactionalEmail } from "@/lib/mail";
+import { sendAbandonedCartRecoverySms } from "@/lib/sms";
 import { recordAudit } from "@/lib/audit";
 import { formatMoney } from "@/lib/money";
 import { getAbandonedCartSettings } from "@/lib/settings/service";
@@ -700,6 +701,15 @@ export async function sendAbandonedCartRecoveryEmail(
       discountBlockHtml,
     },
   });
+
+  if (cart.phone && cart.customerId) {
+    sendAbandonedCartRecoverySms({
+      phone: cart.phone,
+      customerId: cart.customerId,
+      recoveryUrl: restoreUrl,
+      discountCode,
+    }).catch(() => {});
+  }
 
   await db.cart.update({
     where: { id: cart.id },

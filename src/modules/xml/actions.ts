@@ -1113,3 +1113,38 @@ export async function loadXmlSourceWizardAction(
   };
 }
 
+export async function getFeedSourceRunsAction(
+  sourceId: string
+): Promise<{ ok: boolean; runs?: FeedRunHistoryDto[]; error?: string }> {
+  try {
+    await requireStaff("xml.manage");
+    const runs = await db.feedRun.findMany({
+      where: { sourceId },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+    });
+    return {
+      ok: true,
+      runs: runs.map((r) => ({
+        id: r.id,
+        mode: r.mode,
+        status: r.status as FeedRunHistoryDto["status"],
+        trigger: r.trigger,
+        stats: parseRunStats(r.stats),
+        errors: parseRunErrors(r.errors),
+        sample: parseRunSample(r.sample),
+        message: r.message,
+        startedAt: r.startedAt ? r.startedAt.toISOString() : null,
+        finishedAt: r.finishedAt ? r.finishedAt.toISOString() : null,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Çalıştırma geçmişi alınamadı.",
+    };
+  }
+}
+
+

@@ -27,6 +27,9 @@ model Cart {
   recoveryEmailSentCount Int        @default(0)
   recoveredAt            DateTime?
   recoveryDiscountCode   String?
+  /// Sadakat puanı kullanımı
+  loyaltyPointsUsed      Int        @default(0)
+  loyaltyDiscountAmount  Int        @default(0)
   createdAt              DateTime   @default(now())
   updatedAt              DateTime   @updatedAt
   items                  CartItem[]
@@ -175,6 +178,9 @@ model Order {
   taxTotal            Int               @default(0)
   total               Int
   refundedTotal       Int               @default(0)
+  loyaltyPointsUsed   Int               @default(0)
+  loyaltyPointsEarned Int               @default(0)
+  loyaltyDiscountAmount Int             @default(0)
   shippingAddress     Json
   billingAddress      Json
   shippingMethodId    String?
@@ -347,17 +353,21 @@ model ReturnRequest {
   order        Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
   status       ReturnStatus @default(REQUESTED)
   reason       String?
-  customerNote String?
-  staffNote    String?
-  refundAmount Int?
-  restock      Boolean      @default(true)
-  receivedAt   DateTime?
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-  items        ReturnItem[]
+  customerNote    String?
+  staffNote       String?
+  refundAmount    Int?
+  restock         Boolean      @default(true)
+  returnCode      String?
+  carrierCode     String?
+  hygieneAccepted Boolean      @default(false)
+  receivedAt      DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  items           ReturnItem[]
 
   @@index([orderId])
   @@index([status])
+  @@index([returnCode])
 }
 
 model ReturnItem {

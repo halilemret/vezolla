@@ -5,6 +5,7 @@ import {
   BuildingOffice,
   CheckCircle,
   CreditCard,
+  Crown,
   DeviceMobile,
   EnvelopeSimple,
   Globe,
@@ -28,12 +29,16 @@ import { PERMISSIONS, hasPermission } from "@/lib/rbac/permissions";
 import { THEME_PRESETS } from "@/lib/settings/theme-presets";
 import {
   getConversionSettings,
+  getInstallmentSettings,
+  getClubSettings,
   getInvoiceSettings,
   getPaymentSettings,
   getSeoSettings,
   getStoreSettings,
   getThemeSettings,
 } from "@/lib/settings/service";
+import { InstallmentSettingsClient } from "./taksit/client";
+import { ClubSettingsClient } from "./vezollaclub/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -67,6 +72,8 @@ type SettingsTabKey =
   | "tema"
   | "donusum"
   | "odeme"
+  | "taksit"
+  | "vezollaclub"
   | "fatura"
   | "kargo"
   | "seo"
@@ -78,6 +85,8 @@ const SETTINGS_TABS: ReadonlyArray<{ key: SettingsTabKey; label: string }> = [
   { key: "tema", label: "Vitrin Tema Özelleştirici" },
   { key: "donusum", label: "Dönüşüm ve Psikolojik Satış" },
   { key: "odeme", label: "Ödeme Ayarları" },
+  { key: "taksit", label: "Kredi Kartı Taksit Yönetimi" },
+  { key: "vezollaclub", label: "VezollaClub Sadakat ve Puan Yönetimi" },
   { key: "fatura", label: "e-Fatura / e-Arşiv Entegrasyonu" },
   { key: "kargo", label: "Kargo Yöntemleri" },
   { key: "seo", label: "SEO Varsayılanları" },
@@ -105,6 +114,8 @@ export default async function AdminSettingsPage({
     themeSettings,
     conversionSettings,
     paymentSettings,
+    installmentSettings,
+    clubSettings,
     invoiceSettings,
     seoSettings,
     shippingMethods,
@@ -117,6 +128,8 @@ export default async function AdminSettingsPage({
     getThemeSettings(),
     getConversionSettings(),
     getPaymentSettings(),
+    getInstallmentSettings(),
+    getClubSettings(),
     getInvoiceSettings(),
     getSeoSettings(),
     db.shippingMethod.findMany({
@@ -426,17 +439,33 @@ export default async function AdminSettingsPage({
                 </span>
               </label>
 
-              <div>
-                <Label htmlFor="st-retention">Ziyaretçi Profili Saklama Süresi (Gün)</Label>
-                <Input
-                  id="st-retention"
-                  name="visitorRetentionDays"
-                  type="number"
-                  min={1}
-                  max={730}
-                  defaultValue={storeSettings.visitorRetentionDays}
-                  className="mt-1 font-mono tabular-nums"
-                />
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <Label htmlFor="st-min-order-subtotal">Minimum Sepet / Sipariş Tutarı (TL)</Label>
+                  <Input
+                    id="st-min-order-subtotal"
+                    name="minOrderSubtotalTl"
+                    defaultValue={formatMoneyCompact(storeSettings.minOrderSubtotalMinor ?? 0)}
+                    placeholder="0,00"
+                    className="mt-1 font-mono tabular-nums"
+                  />
+                  <p className="mt-1 text-[11px] text-zinc-500">
+                    Müşterinin sipariş verebilmesi için gereken asgari sepet tutarı (0 ise kısıtlama uygulanmaz).
+                  </p>
+                </div>
+
+                <div>
+                  <Label htmlFor="st-retention">Ziyaretçi Profili Saklama Süresi (Gün)</Label>
+                  <Input
+                    id="st-retention"
+                    name="visitorRetentionDays"
+                    type="number"
+                    min={1}
+                    max={730}
+                    defaultValue={storeSettings.visitorRetentionDays}
+                    className="mt-1 font-mono tabular-nums"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -1521,6 +1550,16 @@ export default async function AdminSettingsPage({
             </Button>
           </div>
         </form>
+      ) : null}
+
+      {/* 2.5. KREDİ KARTI TAKSİT YÖNETİMİ */}
+      {activeTab === "taksit" ? (
+        <InstallmentSettingsClient initialSettings={installmentSettings} />
+      ) : null}
+
+      {/* 2.6. VEZOLLACLUB SADAKAT VE PUAN YÖNETİMİ */}
+      {activeTab === "vezollaclub" ? (
+        <ClubSettingsClient initialSettings={clubSettings} />
       ) : null}
 
       {/* 3.1. E-FATURA VE E-ARŞİV ENTEGRASYONU */}

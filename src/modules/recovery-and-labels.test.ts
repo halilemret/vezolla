@@ -182,4 +182,14 @@ describe("Kargo barkodu ve ZPL etiketi", () => {
     });
     expect(zpl.match(/\^XZ/g)).toHaveLength(1);
   });
+
+  it("dış termal etikette mahremiyet garantisi: ürün adı yerine daima nötr 'Giyim / Tekstil Ürünü' basar", () => {
+    const zpl = buildShippingLabelZpl({
+      ...baseLabel,
+      itemSummary: "1x Dantelli Transparan Babydoll - Bordo",
+    });
+    expect(zpl).toContain("Giyim / Tekstil Ürünü");
+    expect(zpl).not.toContain("Dantelli");
+    expect(zpl).not.toContain("Babydoll");
+  });
 });

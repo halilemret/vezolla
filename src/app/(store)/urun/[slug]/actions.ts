@@ -82,6 +82,18 @@ export async function submitProductReviewStoreAction(
   const title = String(formData.get("title") ?? "").trim() || undefined;
   const body = String(formData.get("body") ?? "").trim();
 
+  const heightRaw = Number.parseInt(String(formData.get("heightCm") ?? ""), 10);
+  const weightRaw = Number.parseInt(String(formData.get("weightKg") ?? ""), 10);
+  const sizePurchased = String(formData.get("sizePurchased") ?? "").trim() || undefined;
+  const fitRating = String(formData.get("fitRating") ?? "").trim() || undefined;
+  const rawImageVal = String(formData.get("imageUrl") ?? "").trim();
+  const images = rawImageVal
+    ? rawImageVal
+        .split(/[\n,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+
   if (!productId || !authorName || !body) {
     return {
       ok: false,
@@ -99,6 +111,11 @@ export async function submitProductReviewStoreAction(
       rating: Number.isFinite(ratingRaw) ? Math.min(5, Math.max(1, ratingRaw)) : 5,
       title,
       body,
+      heightCm: Number.isFinite(heightRaw) ? heightRaw : null,
+      weightKg: Number.isFinite(weightRaw) ? weightRaw : null,
+      sizePurchased,
+      fitRating,
+      images,
     });
 
     if (productSlug) {

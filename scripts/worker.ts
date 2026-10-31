@@ -9,9 +9,15 @@ const INTERVAL_MS = 60_000;
 async function tick() {
   const started = new Date().toISOString();
   try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const cronSecret = process.env.CRON_SECRET?.trim();
+    if (cronSecret) {
+      headers["Authorization"] = `Bearer ${cronSecret}`;
+    }
+
     const res = await fetch(`${APP_URL}/api/cron`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
     });
     if (!res.ok) {
       console.warn(`[worker ${started}] Cron yanıt kodu: ${res.status}`);

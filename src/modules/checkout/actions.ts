@@ -5,6 +5,7 @@ import {
   addCartItem,
   applyPromoCode,
   computeCartSummary,
+  getOrCreateCart,
   removeCartItem,
   removePromoCode,
   restoreCartFromRecoveryToken,
@@ -20,8 +21,16 @@ import {
 } from "@/modules/checkout/service";
 import type { CheckoutAddress, PlaceOrderInput } from "@/modules/checkout/schemas";
 import { getAbandonedCartSettings } from "@/lib/settings/service";
+import { cookies } from "next/headers";
+import { CART_COOKIE, getCurrentCustomer } from "@/lib/auth/session";
+import { db } from "@/lib/db";
+import { cancelOrder } from "@/modules/orders/service";
 import { ensureRecoveryPromotion } from "@/modules/analytics/abandoned-cart";
 import { resolveRecoveryCode } from "@/modules/analytics/recovery-offer";
+import {
+  applyLoyaltyDiscountToCart,
+  removeLoyaltyDiscountFromCart,
+} from "@/modules/loyalty/service";
 
 export async function getCartSummaryAction(
   options?: ComputeCartSummaryOptions
@@ -226,3 +235,168 @@ export async function restoreAbandonedCartAction(token: string, promoCode?: stri
   }
   return res;
 }
+
+export async function cancelPendingOrderAction(
+  orderId: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (!orderId) {
+    return { ok: false, error: "Sipariş kimliği eksik." };
+  }
+
+  // Güvenlik denetimi: Yalnızca bekleyen (PENDING) durumundaki siparişler ve
+  // bu oturuma/kullanıcıya ait olan siparişler müşteri tarafından iptal edilebilir.
+  const cookieStore = await cookies();
+  const cartCookieId = cookieStore.get(CART_COOKIE)?.value;
+  const currentCustomer = await getCurrentCustomer();
+
+  const targetOrder = await db.order.findUnique({
+    where: { id: orderId },
+    select: {
+      id: true,
+      status: true,
+      paymentStatus: true,
+      customerId: true,
+    },
+  });
+
+  if (!targetOrder) {
+    return { ok: false, error: "Sipariş bulunamadı." };
+  }
+
+  if (targetOrder.status !== "OPEN" || targetOrder.paymentStatus !== "PENDING") {
+    return {
+      ok: false,
+      error: "Yalnızca ödeme aşamasında bekleyen siparişler iptal edilebilir.",
+    };
+  }
+
+  const matchingCart = cartCookieId
+    ? await db.cart.findFirst({
+        where: { id: cartCookieId, orderId },
+      })
+    : null;
+
+  const isOwner =
+    Boolean(matchingCart) ||
+    Boolean(currentCustomer?.id && targetOrder.customerId === currentCustomer.id);
+
+  if (!isOwner) {
+    return { ok: false, error: "Bu işlem için yetkiniz bulunmuyor." };
+  }
+
+  const res = await cancelOrder({
+    orderId,
+    reason: "Müşteri ödeme ekranını kapattı / ödemeden vazgeçti.",
+  });
+  if (res.ok) {
+    await db.cart.updateMany({
+      where: { orderId },
+      data: { completedAt: null },
+    });
+    revalidatePath("/sepet");
+    revalidatePath("/odeme");
+  }
+  return res;
+}
+
+export async function applyLoyaltyPointsAction(
+  pointsToUse: number
+): Promise<{ ok: boolean; error?: string; summary?: CartSummary }> {
+  const customer = await getCurrentCustomer();
+  if (!customer) {
+    return { ok: false, error: "Puan kullanabilmek için lütfen giriş yapınız." };
+  }
+
+  const summary = await computeCartSummary();
+  if (!summary.cartId) {
+    return { ok: false, error: "Sepetiniz bulunamadı." };
+  }
+
+  const res = await applyLoyaltyDiscountToCart({
+    cartId: summary.cartId,
+    customerId: customer.id,
+    pointsToUse,
+    subtotalMinor: summary.subtotalAfterDiscountMinor,
+  });
+
+  if (!res.ok) {
+    return { ok: false, error: res.error };
+  }
+
+  const updatedSummary = await computeCartSummary();
+  revalidatePath("/sepet");
+  revalidatePath("/odeme");
+  return { ok: true, summary: updatedSummary };
+}
+
+export async function removeLoyaltyPointsAction(): Promise<{
+  ok: boolean;
+  error?: string;
+  summary?: CartSummary;
+}> {
+  const summary = await computeCartSummary();
+  if (!summary.cartId) {
+    return { ok: false, error: "Sepetiniz bulunamadı." };
+  }
+
+  await removeLoyaltyDiscountFromCart({ cartId: summary.cartId });
+  const updatedSummary = await computeCartSummary();
+  revalidatePath("/sepet");
+  revalidatePath("/odeme");
+  return { ok: true, summary: updatedSummary };
+}
+
+export async function addBundleToCartAction(
+  variantIds: string[]
+): Promise<{ ok: boolean; error?: string; summary?: CartSummary }> {
+  if (!variantIds || variantIds.length === 0) {
+    return { ok: false, error: "Kombin parçası seçilmedi." };
+  }
+
+  for (const vId of variantIds) {
+    const res = await addCartItem(vId, 1);
+    if (!res.ok) {
+      return { ok: false, error: res.error };
+    }
+  }
+
+  // Yalnızca en az 2 parça (gerçek kombin seti) seçildiyse %10 set indirimi kuponunu sepete ekle
+  if (variantIds.length >= 2) {
+    await db.promotion.upsert({
+      where: { code: "KOMBIN10" },
+      create: {
+        name: "Kombin %10 Set İndirimi",
+        code: "KOMBIN10",
+        description: "Kombini Tamamla parçalarına özel %10 indirim (En az 2 parça)",
+        type: "PERCENTAGE",
+        value: 1000,
+        conditions: { minItemCount: 2 },
+        isActive: true,
+        isCombinable: true,
+        priority: 20,
+      },
+      update: {
+        isActive: true,
+        conditions: { minItemCount: 2 },
+      },
+    });
+
+    const cart = await getOrCreateCart({ createIfMissing: true });
+    if (cart) {
+      const bundleCode = `KOMBIN10:${variantIds.join(",")}`;
+      const filtered = cart.promoCodes.filter((c) => c !== "KOMBIN10");
+      const nextCodes = Array.from(new Set([...filtered, bundleCode]));
+      await db.cart.update({
+        where: { id: cart.id },
+        data: { promoCodes: nextCodes },
+      });
+    }
+  }
+
+  const finalSummary = await computeCartSummary();
+
+  revalidatePath("/sepet");
+  revalidatePath("/odeme");
+  return { ok: true, summary: finalSummary };
+}
+

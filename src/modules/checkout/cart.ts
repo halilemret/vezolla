@@ -8,7 +8,8 @@ import {
   getCurrentCustomer,
 } from "@/lib/auth/session";
 import { extractIncludedVat } from "@/lib/money";
-import { getPaymentSettings } from "@/lib/settings/service";
+import { getPaymentSettings, getStoreSettings, getClubSettings } from "@/lib/settings/service";
+import { parsePromotionConditions } from "@/modules/promotions/schemas";
 import {
   evaluatePromotions,
   type AppliedPromotionSummary,
@@ -94,6 +95,8 @@ export interface CartLineSummary {
   baseUnitPriceMinor: number;
   unitPriceMinor: number;
   compareAtPriceMinor: number | null;
+  isClubPriceApplied?: boolean;
+  clubPriceMinor?: number | null;
   lineSubtotalMinor: number;
   discountMinor: number;
   lineTotalMinor: number;
@@ -116,6 +119,9 @@ export interface CartSummary {
   subtotalMinor: number;
   discountTotalMinor: number;
   subtotalAfterDiscountMinor: number;
+  minOrderSubtotalMinor: number;
+  isMinOrderSubtotalMet: boolean;
+  minOrderRemainingMinor: number;
   shippingTotalMinor: number;
   paymentFeeMinor: number;
   taxTotalMinor: number;
@@ -134,6 +140,11 @@ export interface CartSummary {
   email: string | null;
   phone: string | null;
   note: string | null;
+  loyaltyPointsUsed: number;
+  loyaltyDiscountMinor: number;
+  customerLoyaltyBalance?: number;
+  maxLoyaltyPointsUsable?: number;
+  loyaltyPointValueKurus?: number;
 }
 
 /**
@@ -465,8 +476,21 @@ export async function applyPromoCode(
     return { ok: false, error: "Sepet bulunamadı." };
   }
 
-  const promo = await db.promotion.findUnique({
-    where: { code },
+  if (code === "KOMBIN10") {
+    const hasBundle = cart.promoCodes.some((c) => c.toUpperCase().startsWith("KOMBIN10:"));
+    if (!hasBundle) {
+      return {
+        ok: false,
+        error: "Kombin indirimi yalnızca ürün detayındaki 'Kombini Tamamla' alanından eklenen ürünlerde geçerlidir.",
+      };
+    }
+  }
+
+  const baseCode = code.split(":")[0];
+  const promo = await db.promotion.findFirst({
+    where: {
+      OR: [{ code }, { code: baseCode }],
+    },
   });
 
   if (!promo || !promo.isActive) {
@@ -483,7 +507,9 @@ export async function applyPromoCode(
   });
 
   const summary = await computeCartSummary({ cartId: cart.id });
-  const rejected = summary.rejectedCodes.find((r) => r.code === code);
+  const rejected = summary.rejectedCodes.find(
+    (r) => r.code === code || (code.startsWith("KOMBIN10") && r.code.startsWith("KOMBIN10"))
+  );
   if (rejected) {
     await db.cart.update({
       where: { id: cart.id },
@@ -507,7 +533,14 @@ export async function removePromoCode(
     return { ok: true };
   }
 
-  const nextCodes = cart.promoCodes.filter((c) => c.toUpperCase() !== code);
+  const nextCodes = cart.promoCodes.filter((c) => {
+    const upper = c.toUpperCase();
+    if (upper === code) return false;
+    if (code === "KOMBIN10" && upper.startsWith("KOMBIN10")) return false;
+    if (upper.startsWith(code + ":")) return false;
+    return true;
+  });
+
   await db.cart.update({
     where: { id: cart.id },
     data: { promoCodes: nextCodes },
@@ -537,10 +570,12 @@ export async function computeCartSummary(
     cartId = activeCart?.id;
   }
 
-  const [paymentSettings, defaultTaxClass, currentCustomer] = await Promise.all([
+  const [paymentSettings, storeSettings, defaultTaxClass, currentCustomer, clubSettings] = await Promise.all([
     getPaymentSettings(),
+    getStoreSettings(),
     db.taxClass.findFirst({ where: { isDefault: true } }),
     getCurrentCustomer(),
+    getClubSettings().catch(() => null),
   ]);
 
   const defaultTaxRateBps = defaultTaxClass?.rateBps ?? 2000;
@@ -579,6 +614,13 @@ export async function computeCartSummary(
       email: currentCustomer?.email ?? null,
       phone: currentCustomer?.phone ?? null,
       note: null,
+      loyaltyPointsUsed: 0,
+      loyaltyDiscountMinor: 0,
+      customerLoyaltyBalance: 0,
+      maxLoyaltyPointsUsable: 0,
+      minOrderSubtotalMinor: storeSettings.minOrderSubtotalMinor ?? 0,
+      isMinOrderSubtotalMet: (storeSettings.minOrderSubtotalMinor ?? 0) <= 0,
+      minOrderRemainingMinor: storeSettings.minOrderSubtotalMinor ?? 0,
     };
   }
 
@@ -591,6 +633,7 @@ export async function computeCartSummary(
           email: true,
           groupId: true,
           orderCount: true,
+          loyaltyPoints: true,
         },
       },
       items: {
@@ -660,6 +703,9 @@ export async function computeCartSummary(
     }
   }
 
+  const isClubMember = Boolean(effectiveCustomerId || currentCustomer?.id || cart.customerId);
+  const isClubActive = clubSettings ? clubSettings.enabled !== false : true;
+
   const now = new Date();
   const promoLines: PromoLineInput[] = [];
   const rawLines: Array<{
@@ -675,6 +721,8 @@ export async function computeCartSummary(
     baseUnitPriceMinor: number;
     unitPriceMinor: number;
     compareAtPriceMinor: number | null;
+    isClubPriceApplied: boolean;
+    clubPriceMinor: number | null;
     taxRateBps: number;
     weightGrams: number;
     availableStock: number;
@@ -688,12 +736,31 @@ export async function computeCartSummary(
   for (const item of cart.items) {
     const v = item.variant;
     const p = v.product;
-    const unitPriceMinor = resolveEffectiveVariantPrice(
+    const baseEffectivePrice = resolveEffectiveVariantPrice(
       v.price,
       v.priceListPrices,
       customerGroupId,
       now
     );
+
+    // VezollaClub kulüp özel fiyat kontrolü (giriş yapmış / üye kullanıcılar için)
+    const itemClubPrice = v.clubPrice ?? p.clubPrice ?? null;
+    const isClubPriceApplied = Boolean(
+      isClubMember &&
+      isClubActive &&
+      typeof itemClubPrice === "number" &&
+      itemClubPrice > 0 &&
+      itemClubPrice < baseEffectivePrice
+    );
+
+    const unitPriceMinor = isClubPriceApplied ? itemClubPrice! : baseEffectivePrice;
+    let compareAtPriceMinor = v.compareAtPrice ?? null;
+    if (isClubPriceApplied) {
+      if (!compareAtPriceMinor || compareAtPriceMinor <= unitPriceMinor) {
+        compareAtPriceMinor = baseEffectivePrice;
+      }
+    }
+
     const categoryIds = p.categories.map((c) => c.categoryId);
     const primaryCat =
       p.categories.find((c) => c.isPrimary)?.category.name ??
@@ -725,7 +792,9 @@ export async function computeCartSummary(
       quantity: item.quantity,
       baseUnitPriceMinor: v.price,
       unitPriceMinor,
-      compareAtPriceMinor: v.compareAtPrice,
+      compareAtPriceMinor,
+      isClubPriceApplied,
+      clubPriceMinor: itemClubPrice,
       taxRateBps,
       weightGrams,
       availableStock,
@@ -737,12 +806,30 @@ export async function computeCartSummary(
     });
   }
 
+  // Otomatik sepet temizliği: sepette hiç parçası kalmayan kombin set kuponlarını promoCodes'tan temizle
+  const cartVariantIdSet = new Set(cart.items.map((i) => i.variantId));
+  const validPromoCodes = cart.promoCodes.filter((c) => {
+    if (!c.toUpperCase().startsWith("KOMBIN10:")) return true;
+    const secondPart = c.split(":")[1];
+    const vIds = secondPart ? secondPart.split(",").filter(Boolean) : [];
+    return vIds.some((id) => cartVariantIdSet.has(id));
+  });
+
+  if (validPromoCodes.length !== cart.promoCodes.length) {
+    await db.cart.update({
+      where: { id: cart.id },
+      data: { promoCodes: validPromoCodes },
+    });
+    cart.promoCodes = validPromoCodes;
+  }
+
   // Aktif promosyonları ve müşteri kullanım sayılarını çek
+  const basePromoCodes = cart.promoCodes.map((c) => (c.split(":")[0] ?? "").toUpperCase()).filter(Boolean);
   const promotions = await db.promotion.findMany({
     where: {
       OR: [
         { isActive: true },
-        ...(cart.promoCodes.length > 0 ? [{ code: { in: cart.promoCodes } }] : []),
+        ...(basePromoCodes.length > 0 ? [{ code: { in: basePromoCodes } }] : []),
       ],
     },
   });
@@ -767,27 +854,77 @@ export async function computeCartSummary(
     }
   }
 
-  const promoCandidates: PromoCandidate[] = promotions.map((p) => ({
-    id: p.id,
-    name: p.name,
-    code: p.code,
-    type: p.type,
-    value: p.value,
-    conditions: p.conditions,
-    buyQuantity: p.buyQuantity,
-    getQuantity: p.getQuantity,
-    getDiscountBps: p.getDiscountBps,
-    maxDiscount: p.maxDiscount,
-    usageLimit: p.usageLimit,
-    usagePerCustomer: p.usagePerCustomer,
-    usageCount: p.usageCount,
-    customerUsageCount: usageCountsByPromo[p.id] ?? 0,
-    startsAt: p.startsAt,
-    endsAt: p.endsAt,
-    isActive: p.isActive,
-    isCombinable: p.isCombinable,
-    priority: p.priority,
-  }));
+  const promoCandidates: PromoCandidate[] = [];
+  for (const p of promotions) {
+    if (p.code === "KOMBIN10") {
+      const kombinCodes = cart.promoCodes.filter(
+        (c) => c.toUpperCase() === "KOMBIN10" || c.toUpperCase().startsWith("KOMBIN10:")
+      );
+      if (kombinCodes.length === 0) continue;
+
+      for (let i = 0; i < kombinCodes.length; i++) {
+        const rawCode = kombinCodes[i];
+        if (!rawCode) continue;
+        const parts = rawCode.split(":");
+        const secondPart = parts[1];
+        const variantIds =
+          parts.length > 1 && secondPart
+            ? secondPart.split(",").map((s) => s.trim()).filter(Boolean)
+            : [];
+
+        const baseCond = parsePromotionConditions(p.conditions);
+        const setConditions = {
+          ...baseCond,
+          variantIds: variantIds.length > 0 ? variantIds : baseCond.variantIds,
+          minItemCount: 2,
+        };
+
+        promoCandidates.push({
+          id: kombinCodes.length > 1 ? `${p.id}_${i}` : p.id,
+          name: p.name,
+          code: rawCode.toUpperCase(),
+          type: p.type,
+          value: p.value,
+          conditions: setConditions,
+          buyQuantity: p.buyQuantity,
+          getQuantity: p.getQuantity,
+          getDiscountBps: p.getDiscountBps,
+          maxDiscount: p.maxDiscount,
+          usageLimit: p.usageLimit,
+          usagePerCustomer: p.usagePerCustomer,
+          usageCount: p.usageCount,
+          customerUsageCount: usageCountsByPromo[p.id] ?? 0,
+          startsAt: p.startsAt,
+          endsAt: p.endsAt,
+          isActive: p.isActive,
+          isCombinable: p.isCombinable,
+          priority: p.priority,
+        });
+      }
+    } else {
+      promoCandidates.push({
+        id: p.id,
+        name: p.name,
+        code: p.code,
+        type: p.type,
+        value: p.value,
+        conditions: p.conditions,
+        buyQuantity: p.buyQuantity,
+        getQuantity: p.getQuantity,
+        getDiscountBps: p.getDiscountBps,
+        maxDiscount: p.maxDiscount,
+        usageLimit: p.usageLimit,
+        usagePerCustomer: p.usagePerCustomer,
+        usageCount: p.usageCount,
+        customerUsageCount: usageCountsByPromo[p.id] ?? 0,
+        startsAt: p.startsAt,
+        endsAt: p.endsAt,
+        isActive: p.isActive,
+        isCombinable: p.isCombinable,
+        priority: p.priority,
+      });
+    }
+  }
 
   const promoEval = evaluatePromotions(promoCandidates, {
     lines: promoLines,
@@ -830,6 +967,8 @@ export async function computeCartSummary(
       baseUnitPriceMinor: r.baseUnitPriceMinor,
       unitPriceMinor: r.unitPriceMinor,
       compareAtPriceMinor: r.compareAtPriceMinor,
+      isClubPriceApplied: r.isClubPriceApplied,
+      clubPriceMinor: r.clubPriceMinor,
       lineSubtotalMinor,
       discountMinor,
       lineTotalMinor,
@@ -897,10 +1036,48 @@ export async function computeCartSummary(
       ? (matchedPayOpt?.feeMinor ?? paymentSettings.codFeeMinor)
       : 0;
 
+  // Vezolla Club Sadakat Puanı İndirimi
+  const customerLoyaltyBalance =
+    cart.customer?.loyaltyPoints ??
+    (effectiveCustomerId
+      ? (
+          await db.customer.findUnique({
+            where: { id: effectiveCustomerId },
+            select: { loyaltyPoints: true },
+          })
+        )?.loyaltyPoints ?? 0
+      : 0);
+
+  const pointValueKurus = clubSettings?.pointValueKurus ?? 50;
+  const maxDiscountRatio = (clubSettings?.maxOrderDiscountPercent ?? 20) / 100;
+
+  // Sepet ara toplamının en fazla %20'si kadar sadakat puanı indirimi kullanılabilir
+  const maxLoyaltyDiscountMinor = Math.floor(subtotalAfterDiscountMinor * maxDiscountRatio);
+  const maxLoyaltyPointsUsable = Math.min(
+    customerLoyaltyBalance,
+    Math.floor(maxLoyaltyDiscountMinor / pointValueKurus)
+  );
+
+  const rawLoyaltyPointsUsed = cart.loyaltyPointsUsed ?? 0;
+  const loyaltyPointsUsed = Math.min(rawLoyaltyPointsUsed, maxLoyaltyPointsUsable);
+  const loyaltyDiscountMinor = loyaltyPointsUsed * pointValueKurus;
+
   const totalMinor =
     lines.length > 0
-      ? subtotalAfterDiscountMinor + shippingTotalMinor + paymentFeeMinor
+      ? Math.max(
+          0,
+          subtotalAfterDiscountMinor + shippingTotalMinor + paymentFeeMinor - loyaltyDiscountMinor
+        )
       : 0;
+
+  const minOrderSubtotalMinor = storeSettings.minOrderSubtotalMinor ?? 0;
+  const isMinOrderSubtotalMet =
+    lines.length === 0 ||
+    minOrderSubtotalMinor <= 0 ||
+    subtotalAfterDiscountMinor >= minOrderSubtotalMinor;
+  const minOrderRemainingMinor = isMinOrderSubtotalMet
+    ? 0
+    : Math.max(0, minOrderSubtotalMinor - subtotalAfterDiscountMinor);
 
   return {
     cartId: cart.id,
@@ -910,14 +1087,25 @@ export async function computeCartSummary(
     subtotalMinor,
     discountTotalMinor,
     subtotalAfterDiscountMinor,
+    minOrderSubtotalMinor,
+    isMinOrderSubtotalMet,
+    minOrderRemainingMinor,
     shippingTotalMinor,
     paymentFeeMinor,
     taxTotalMinor,
     totalMinor,
     totalWeightGrams,
-    promoCodes: cart.promoCodes,
-    appliedPromotions: promoEval.appliedPromotions,
-    rejectedCodes: promoEval.rejectedCodes,
+    promoCodes: Array.from(
+      new Set(cart.promoCodes.map((c) => (c.startsWith("KOMBIN10") ? "KOMBIN10" : c)))
+    ),
+    appliedPromotions: promoEval.appliedPromotions.map((p) => ({
+      ...p,
+      code: p.code?.startsWith("KOMBIN10") ? "KOMBIN10" : p.code,
+    })),
+    rejectedCodes: promoEval.rejectedCodes.map((r) => ({
+      ...r,
+      code: r.code.startsWith("KOMBIN10") ? "KOMBIN10" : r.code,
+    })),
     freeShippingByPromo: promoEval.freeShipping,
     availableShippingMethods,
     selectedShippingMethod,
@@ -928,6 +1116,11 @@ export async function computeCartSummary(
     email: cart.email ?? currentCustomer?.email ?? null,
     phone: cart.phone ?? currentCustomer?.phone ?? null,
     note: cart.note ?? null,
+    loyaltyPointsUsed,
+    loyaltyDiscountMinor,
+    customerLoyaltyBalance,
+    maxLoyaltyPointsUsable,
+    loyaltyPointValueKurus: pointValueKurus,
   };
 }
 

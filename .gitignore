@@ -13,3 +13,6 @@ coverage
 npm-debug.log*
 repomix-output.xml
 .vercel
+
+.vercel
+.env*

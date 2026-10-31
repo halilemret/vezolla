@@ -38,6 +38,7 @@ interface EditableVariantRow {
   supplierCode: string;
   priceText: string;
   compareAtPriceText: string;
+  clubPriceText: string;
   costPriceText: string;
   stockText: string;
   isActive: boolean;
@@ -98,6 +99,10 @@ function toEditableVariant(v: ProductVariantInput): EditableVariantRow {
     compareAtPriceText:
       v.compareAtPrice !== null && v.compareAtPrice !== undefined
         ? formatMoneyCompact(v.compareAtPrice)
+        : "",
+    clubPriceText:
+      v.clubPrice !== null && v.clubPrice !== undefined
+        ? formatMoneyCompact(v.clubPrice)
         : "",
     costPriceText:
       v.costPrice !== null && v.costPrice !== undefined
@@ -190,6 +195,7 @@ export default function ProductEditorPage({
             supplierCode: "",
             priceText: "499,90",
             compareAtPriceText: "",
+            clubPriceText: "",
             costPriceText: "",
             stockText: "10",
             isActive: true,
@@ -282,6 +288,7 @@ export default function ProductEditorPage({
         supplierCode: "",
         priceText: fallbackPrice,
         compareAtPriceText: "",
+        clubPriceText: "",
         costPriceText: "",
         stockText: "0",
         isActive: true,
@@ -384,6 +391,9 @@ export default function ProductEditorPage({
         price: parseMoneyInput(v.priceText),
         compareAtPrice: v.compareAtPriceText.trim()
           ? parseMoneyInput(v.compareAtPriceText)
+          : null,
+        clubPrice: v.clubPriceText.trim()
+          ? parseMoneyInput(v.clubPriceText)
           : null,
         costPrice: v.costPriceText.trim()
           ? parseMoneyInput(v.costPriceText)
@@ -1031,6 +1041,7 @@ export default function ProductEditorPage({
                       supplierCode: "",
                       priceText: prev[0]?.priceText ?? "499,90",
                       compareAtPriceText: "",
+                      clubPriceText: "",
                       costPriceText: "",
                       stockText: "0",
                       isActive: true,
@@ -1055,6 +1066,7 @@ export default function ProductEditorPage({
                     <th className="px-2.5 py-2">Barkod</th>
                     <th className="px-2.5 py-2">Satış Fiyatı (TL)</th>
                     <th className="px-2.5 py-2">Üstü Çizili (TL)</th>
+                    <th className="px-2.5 py-2">VezollaClub (TL)</th>
                     <th className="px-2.5 py-2">Maliyet (TL)</th>
                     <th className="px-2.5 py-2">Stok</th>
                     <th className="px-2.5 py-2 text-center">Aktif</th>
@@ -1143,6 +1155,25 @@ export default function ProductEditorPage({
                           }
                           placeholder="İsteğe bağlı"
                           className="w-24 font-mono tabular-nums"
+                        />
+                      </td>
+                      <td className="px-2.5 py-2">
+                        <Input
+                          value={v.clubPriceText}
+                          onChange={(e) =>
+                            setVariants((prev) =>
+                              prev.map((row, idx) =>
+                                idx === vIdx
+                                  ? {
+                                      ...row,
+                                      clubPriceText: e.target.value,
+                                    }
+                                  : row
+                              )
+                            )
+                          }
+                          placeholder="Kulüp (TL)"
+                          className="w-24 font-mono tabular-nums text-amber-700 font-semibold"
                         />
                       </td>
                       <td className="px-2.5 py-2">

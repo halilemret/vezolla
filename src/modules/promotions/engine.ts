@@ -211,7 +211,11 @@ function validateCandidate(
     const matchCategory =
       conditions.categoryIds.length === 0 ||
       line.categoryIds.some((cid) => conditions.categoryIds.includes(cid));
-    return matchProduct && matchCategory;
+    const matchVariant =
+      !conditions.variantIds ||
+      conditions.variantIds.length === 0 ||
+      conditions.variantIds.includes(line.variantId);
+    return matchProduct && matchCategory && matchVariant;
   });
 
   if (eligibleLines.length === 0) {
@@ -219,6 +223,27 @@ function validateCandidate(
       valid: false,
       reason: "Sepetinizde bu kampanyanın kapsadığı ürün bulunmuyor.",
     };
+  }
+
+  const isKombin = Boolean(candidate.code?.startsWith("KOMBIN10"));
+  const effectiveMinItemCount = isKombin
+    ? Math.max(2, conditions.minItemCount ?? 2)
+    : conditions.minItemCount;
+
+  if (effectiveMinItemCount && effectiveMinItemCount > 1) {
+    const distinctEligibleVariants = new Set(eligibleLines.map((l) => l.variantId)).size;
+    const eligibleCount = isKombin
+      ? distinctEligibleVariants
+      : eligibleLines.reduce((sum, l) => sum + l.quantity, 0);
+
+    if (eligibleCount < effectiveMinItemCount) {
+      return {
+        valid: false,
+        reason: isKombin
+          ? "Kombin seti indirimi için sepette kombine ait en az 2 parça ürün bulunmalıdır."
+          : `Bu kampanya için sepetinizde en az ${effectiveMinItemCount} adet ürün bulunmalıdır.`,
+      };
+    }
   }
 
   if (candidate.type === "BUY_X_GET_Y") {
@@ -437,7 +462,11 @@ export function evaluatePromotions(
   }> = [];
 
   for (const code of normalizedCodes) {
-    const matched = candidates.find((c) => c.code?.trim().toUpperCase() === code);
+    const baseCode = code.split(":")[0];
+    const matched = candidates.find((c) => {
+      const candCode = c.code?.trim().toUpperCase();
+      return candCode === code || (candCode === baseCode && baseCode === "KOMBIN10");
+    });
     if (!matched) {
       rejectedCodes.push({ code, reason: "Geçersiz kupon kodu." });
       continue;

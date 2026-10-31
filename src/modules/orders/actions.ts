@@ -210,11 +210,18 @@ export async function createReturnRequestAction(
       }
     }
 
+    const hygieneAccepted =
+      inputOrForm.get("hygieneAccepted") === "on" ||
+      inputOrForm.get("hygieneAccepted") === "true";
+    const carrierCode = String(inputOrForm.get("carrierCode") ?? "YURTICI").trim();
+
     payload = {
       orderId,
       reason,
       customerNote,
       restock: inputOrForm.get("restock") !== "false",
+      hygieneAccepted,
+      carrierCode,
       items,
     };
   } else {

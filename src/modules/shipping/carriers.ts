@@ -161,6 +161,9 @@ function formatTlForLabel(minor: number): string {
   return `${major.toLocaleString("tr-TR")},${cents} TL`;
 }
 
+/** Kadın iç giyim mahremiyeti için dış termal etikete basılan nötr içerik tanımı */
+export const DISCREET_SHIPPING_LABEL = "Giyim / Tekstil Ürünü";
+
 /**
  * 100x150 mm (203 dpi, 812x1218 nokta) Zebra ZPL II kargo etiketi üretir.
  * Türkçe karakterler için ^CI28 (UTF-8) kullanılır.
@@ -206,7 +209,7 @@ export function buildShippingLabelZpl(data: ShippingLabelData): string {
   }
 
   lines.push(
-    `^FO48,816^A0N,24,24^FB716,3,4,L^FD${t(data.itemSummary)}^FS`,
+    `^FO48,816^A0N,24,24^FB716,3,4,L^FD${t(DISCREET_SHIPPING_LABEL)}^FS`,
     "^FO24,910^GB764,3,3^FS",
     `^FO120,950^BY3,3,170^BCN,170,N,N,N^FD${barcode}^FS`,
     `^FO24,1140^A0N,38,38^FB764,1,0,C^FD${barcode}^FS`,

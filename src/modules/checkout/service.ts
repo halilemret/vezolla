@@ -10,6 +10,7 @@ import {
 import { emitDomainEvent } from "@/lib/events";
 import { sendExpoPushNotification } from "@/lib/notifications";
 import { sendTransactionalEmail } from "@/lib/mail";
+import { sendOrderConfirmedSms } from "@/lib/sms";
 import { formatMoney } from "@/lib/money";
 import { getPaymentSettings, getStoreSettings } from "@/lib/settings/service";
 import type { Prisma } from "@/generated/prisma/client";
@@ -25,6 +26,8 @@ import {
   getPaymentMethodLabel,
   normalizePaymentMethodCode,
 } from "@/modules/payments/registry";
+import { cancelOrder } from "@/modules/orders/service";
+import { earnLoyaltyPoints } from "@/modules/loyalty/service";
 
 export interface WarehouseStockCandidate {
   levelId: string;
@@ -221,6 +224,7 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
       : input.billingAddress;
 
   const paymentMethodCode = normalizePaymentMethodCode(input.paymentMethod);
+  const isOnlineCardPayment = paymentMethodCode === "iyzico";
 
   const [storeSettings, paymentSettings, currentCustomer, reqMeta, cookieStore] =
     await Promise.all([
@@ -243,6 +247,20 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
     return {
       ok: false,
       error: "Sepetiniz boş olduğu için sipariş oluşturulamadı.",
+    };
+  }
+
+  // Minimum sepet tutarı kuralını sunucu tarafında doğrula
+  if (
+    storeSettings.minOrderSubtotalMinor > 0 &&
+    summary.subtotalAfterDiscountMinor < storeSettings.minOrderSubtotalMinor
+  ) {
+    return {
+      ok: false,
+      error: `Sipariş oluşturabilmek için sepet tutarınız (indirimler sonrası) en az ${formatMoney(
+        storeSettings.minOrderSubtotalMinor,
+        summary.currency
+      )} olmalıdır.`,
     };
   }
 
@@ -284,24 +302,30 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
         warehouseId: string;
         levelId: string;
         quantity: number;
+        allowBackorder: boolean;
       }> = [];
       const affectedProductIds = new Set<string>();
 
-      for (const line of summary.lines) {
-        affectedProductIds.add(line.productId);
-        const variant = await tx.productVariant.findUnique({
-          where: { id: line.variantId },
-          include: {
-            product: { select: { title: true, status: true, deletedAt: true } },
-            inventoryLevels: {
-              include: {
-                warehouse: {
-                  select: { id: true, name: true, priority: true, isActive: true },
-                },
+      // Tüm varyantları tek bir sorguda toplu getirerek ağ gecikmesini ve transaction süresini minimize et
+      const variantIds = Array.from(new Set(summary.lines.map((l) => l.variantId)));
+      const variants = await tx.productVariant.findMany({
+        where: { id: { in: variantIds } },
+        include: {
+          product: { select: { title: true, status: true, deletedAt: true } },
+          inventoryLevels: {
+            include: {
+              warehouse: {
+                select: { id: true, name: true, priority: true, isActive: true },
               },
             },
           },
-        });
+        },
+      });
+      const variantMap = new Map(variants.map((v) => [v.id, v]));
+
+      for (const line of summary.lines) {
+        affectedProductIds.add(line.productId);
+        const variant = variantMap.get(line.variantId);
 
         if (
           !variant ||
@@ -334,6 +358,7 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
             warehouseId: alloc.warehouseId,
             levelId: alloc.levelId,
             quantity: alloc.quantity,
+            allowBackorder: Boolean(variant.allowBackorder),
           });
         }
       }
@@ -441,6 +466,8 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
           ip: reqMeta.ip,
           userAgent: reqMeta.userAgent,
           placedAt: now,
+          loyaltyPointsUsed: summary.loyaltyPointsUsed,
+          loyaltyDiscountAmount: summary.loyaltyDiscountMinor,
           items: {
             create: summary.lines.map((l) => ({
               variantId: l.variantId,
@@ -461,14 +488,59 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
         },
       });
 
-      // 6) Stok rezervasyonlarını oluştur ve InventoryLevel.reserved değerlerini artır
-      for (const res of allReservationsToCreate) {
-        await tx.inventoryLevel.update({
-          where: { id: res.levelId },
-          data: {
-            reserved: { increment: res.quantity },
-          },
+      // Sadakat puanı kullanıldıysa bakiyeden düş ve hareket kaydı oluştur
+      if (summary.loyaltyPointsUsed > 0 && customerId) {
+        const cust = await tx.customer.findUnique({
+          where: { id: customerId },
+          select: { loyaltyPoints: true },
         });
+        if (cust) {
+          const newBalance = Math.max(0, cust.loyaltyPoints - summary.loyaltyPointsUsed);
+          await tx.customer.update({
+            where: { id: customerId },
+            data: { loyaltyPoints: newBalance },
+          });
+          await tx.loyaltyTransaction.create({
+            data: {
+              customerId,
+              points: -summary.loyaltyPointsUsed,
+              balance: newBalance,
+              reason: "ORDER_REDEMPTION",
+              orderId: order.id,
+            },
+          });
+        }
+      }
+
+      // 6) Stok rezervasyonlarını atomik ham SQL ile kilitle ve InventoryLevel.reserved değerlerini artır
+      // Çoklu satır güncellemelerinde deadlock (ölümcül kilitlenme) riskini engellemek için levelId'ye göre sırala
+      const sortedReservations = [...allReservationsToCreate].sort((a, b) =>
+        a.levelId.localeCompare(b.levelId)
+      );
+
+      for (const res of sortedReservations) {
+        if (res.allowBackorder) {
+          await tx.$executeRaw`
+            UPDATE "InventoryLevel"
+            SET "reserved" = "reserved" + ${res.quantity},
+                "updatedAt" = NOW()
+            WHERE "id" = ${res.levelId}
+          `;
+        } else {
+          const rowsUpdated = await tx.$executeRaw`
+            UPDATE "InventoryLevel"
+            SET "reserved" = "reserved" + ${res.quantity},
+                "updatedAt" = NOW()
+            WHERE "id" = ${res.levelId}
+              AND ("onHand" - "reserved") >= ${res.quantity}
+          `;
+
+          if (rowsUpdated === 0) {
+            throw new Error(
+              "Seçili ürünlerden biri veya daha fazlası için anlık stok tükendi. Lütfen sepetinizi kontrol ediniz."
+            );
+          }
+        }
 
         await tx.stockReservation.create({
           data: {
@@ -481,11 +553,19 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
         });
       }
 
-      // Ürünlerin türetilmiş totalStock ve salesCount alanlarını güncelle
+      // Ürünlerin türetilmiş totalStock ve salesCount alanlarını güncelle (aynı üründen birden fazla varyant varsa birleştir)
+      const linesByProduct = new Map<string, number>();
       for (const line of summary.lines) {
+        linesByProduct.set(
+          line.productId,
+          (linesByProduct.get(line.productId) ?? 0) + line.quantity
+        );
+      }
+
+      for (const [productId, qty] of linesByProduct) {
         const levels = await tx.inventoryLevel.findMany({
           where: {
-            variant: { productId: line.productId, isActive: true },
+            variant: { productId, isActive: true },
             warehouse: { isActive: true },
           },
         });
@@ -494,10 +574,10 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
           0
         );
         await tx.product.update({
-          where: { id: line.productId },
+          where: { id: productId },
           data: {
             totalStock: newTotalStock,
-            salesCount: { increment: line.quantity },
+            salesCount: { increment: qty },
           },
         });
       }
@@ -535,11 +615,11 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
         });
       }
 
-      // 9) Sepeti tamamlandı olarak işaretle
+      // 9) Sepeti siparişle ilişkilendir (online kart ödemelerinde ödeme doğrulanana kadar completedAt: null kalır)
       await tx.cart.update({
         where: { id: summary.cartId },
         data: {
-          completedAt: now,
+          completedAt: isOnlineCardPayment ? null : now,
           orderId: order.id,
           email: normalizedEmail,
           phone: input.phone,
@@ -575,6 +655,9 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
         customerId,
         normalizedEmail,
       };
+    }, {
+      maxWait: 15000,
+      timeout: 30000,
     });
 
     // Ödeme adaptörünü başlat ve Payment kaydını oluştur
@@ -660,13 +743,107 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
       }),
     ]);
 
-    try {
-      cookieStore.delete(CART_COOKIE);
-    } catch {
-      // Cookie silinemezse devam et
+    if (!paymentInit.ok) {
+      // Ödeme adaptörü başlatılamadıysa rezervasyonu serbest bırakıp siparişi iptal et
+      await cancelOrder({
+        orderId: txResult.order.id,
+        reason: paymentInit.errorMessage ?? "Ödeme başlatma hatası",
+      });
+      return {
+        ok: false,
+        error: paymentInit.errorMessage ?? "Ödeme başlatılamadı.",
+        orderId: txResult.order.id,
+        orderNumber: txResult.order.number,
+      };
     }
 
-    // Domain olaylarını ve bilgilendirme e-postasını tetikle
+    if (paymentInit.orderPaymentStatus === "PAID") {
+      // Ödeme anında tahsil edildiyse sepeti tamamla ve çerezi sil
+      await db.cart.updateMany({
+        where: { id: summary.cartId },
+        data: { completedAt: now },
+      });
+
+      try {
+        cookieStore.delete(CART_COOKIE);
+      } catch {
+        // Cookie silinemezse devam et
+      }
+
+      await emitDomainEvent("order.paid", {
+        orderId: txResult.order.id,
+        orderNumber: txResult.order.number,
+        amount: txResult.order.total,
+      });
+
+      await sendTransactionalEmail({
+        to: txResult.normalizedEmail,
+        templateKey: "order_placed",
+        variables: {
+          customerName: `${shippingAddress.firstName} ${shippingAddress.lastName}`,
+          orderNumber: String(txResult.order.number),
+          orderTotal: formatMoney(txResult.order.total, txResult.order.currency),
+          paymentMethod: getPaymentMethodLabel(paymentMethodCode),
+          orderUrl: `${appBaseUrl}/siparis-sonuc/${txResult.order.id}`,
+        },
+      }).catch(() => {});
+
+      if (txResult.order.phone) {
+        sendOrderConfirmedSms({
+          phone: txResult.order.phone,
+          number: txResult.order.number,
+          total: txResult.order.total,
+          currency: txResult.order.currency,
+        }).catch(() => {});
+      }
+    } else if (!isOnlineCardPayment) {
+      // Havale / Kapıda ödeme gibi yöntemlerde sipariş onaylandı, ödeme bekleniyor
+      await db.cart.updateMany({
+        where: { id: summary.cartId },
+        data: { completedAt: now },
+      });
+
+      try {
+        cookieStore.delete(CART_COOKIE);
+      } catch {
+        // Cookie silinemezse devam et
+      }
+
+      await sendTransactionalEmail({
+        to: txResult.normalizedEmail,
+        templateKey: "order_placed",
+        variables: {
+          customerName: `${shippingAddress.firstName} ${shippingAddress.lastName}`,
+          orderNumber: String(txResult.order.number),
+          orderTotal: formatMoney(txResult.order.total, txResult.order.currency),
+          paymentMethod: getPaymentMethodLabel(paymentMethodCode),
+          orderUrl: `${appBaseUrl}/siparis-sonuc/${txResult.order.id}`,
+        },
+      }).catch(() => {});
+
+      if (txResult.order.phone) {
+        sendOrderConfirmedSms({
+          phone: txResult.order.phone,
+          number: txResult.order.number,
+          total: txResult.order.total,
+          currency: txResult.order.currency,
+        }).catch(() => {});
+      }
+
+      if (txResult.customerId) {
+        const earnedPoints = Math.floor(txResult.order.total / 100);
+        if (earnedPoints > 0) {
+          earnLoyaltyPoints({
+            customerId: txResult.customerId,
+            points: earnedPoints,
+            reason: "ORDER_PURCHASE",
+            orderId: txResult.order.id,
+          }).catch(() => {});
+        }
+      }
+    }
+
+    // Domain olayını (order.placed) ve yönetici anlık bildirimini tetikle
     await emitDomainEvent("order.placed", {
       orderId: txResult.order.id,
       orderNumber: txResult.order.number,
@@ -684,26 +861,6 @@ export async function placeOrder(rawInput: PlaceOrderInput): Promise<PlaceOrderR
         type: "order.placed",
         orderId: txResult.order.id,
         orderNumber: txResult.order.number,
-      },
-    }).catch(() => {});
-
-    if (paymentInit.orderPaymentStatus === "PAID") {
-      await emitDomainEvent("order.paid", {
-        orderId: txResult.order.id,
-        orderNumber: txResult.order.number,
-        amount: txResult.order.total,
-      });
-    }
-
-    await sendTransactionalEmail({
-      to: txResult.normalizedEmail,
-      templateKey: "order_placed",
-      variables: {
-        customerName: `${shippingAddress.firstName} ${shippingAddress.lastName}`,
-        orderNumber: String(txResult.order.number),
-        orderTotal: formatMoney(txResult.order.total, txResult.order.currency),
-        paymentMethod: getPaymentMethodLabel(paymentMethodCode),
-        orderUrl: `${appBaseUrl}/siparis-sonuc/${txResult.order.id}`,
       },
     }).catch(() => {});
 

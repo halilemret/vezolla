@@ -179,6 +179,72 @@ export async function loadFeedXmlBuffer(
   }
 }
 
+const recordKeyCache = new WeakMap<Record<string, unknown>, Map<string, string>>();
+
+function getNormalizedKeyMap(record: Record<string, unknown>): Map<string, string> {
+  let map = recordKeyCache.get(record);
+  if (!map) {
+    map = new Map();
+    for (const k of Object.keys(record)) {
+      const lower = k.toLowerCase();
+      map.set(lower, k);
+      const clean = lower.replace(/^@_/, "");
+      if (!map.has(clean)) {
+        map.set(clean, k);
+      }
+    }
+    recordKeyCache.set(record, map);
+  }
+  return map;
+}
+
+/**
+ * Nokta ayrılmış yol ile nesne içerisinden değer okur.
+ * XML öznitelikleri (@_ öneki) ve büyük/küçük harf toleransını destekler (O(1) önbellekli).
+ */
+function getRecordProperty(
+  record: Record<string, unknown>,
+  key: string
+): unknown {
+  // 1. Doğrudan eşleşme
+  if (key in record && record[key] !== undefined) {
+    return record[key];
+  }
+
+  // 2. @_ öneki ekleyerek eşleşme (XML attribute'ları için)
+  const attrKey = `@_${key}`;
+  if (attrKey in record && record[attrKey] !== undefined) {
+    return record[attrKey];
+  }
+
+  // 3. @_ önekini çıkararak eşleşme
+  if (key.startsWith("@_")) {
+    const stripped = key.slice(2);
+    if (stripped in record && record[stripped] !== undefined) {
+      return record[stripped];
+    }
+  }
+
+  // 4. O(1) Case-insensitive eşleşme (WeakMap ile tek seferlik indeks)
+  const map = getNormalizedKeyMap(record);
+  const lowerKey = key.toLowerCase();
+  const matchedKey = map.get(lowerKey) ?? map.get(lowerKey.replace(/^@_/, ""));
+  if (matchedKey && matchedKey in record) {
+    return record[matchedKey];
+  }
+
+  return undefined;
+}
+
+function stripCdata(input: string): string {
+  if (!input) return "";
+  let s = input.trim();
+  if (s.startsWith("<![CDATA[") && s.endsWith("]]>")) {
+    s = s.slice(9, -3).trim();
+  }
+  return s;
+}
+
 /**
  * Nokta ayrılmış yol ile nesne içerisinden değer okur.
  */
@@ -191,12 +257,12 @@ export function getValueByPath(obj: unknown, path: string): unknown {
     if (Array.isArray(current)) {
       const firstItem: unknown = current[0];
       if (isRecord(firstItem)) {
-        current = firstItem[part];
+        current = getRecordProperty(firstItem, part);
       } else {
         return undefined;
       }
     } else if (isRecord(current)) {
-      current = current[part];
+      current = getRecordProperty(current, part);
     } else {
       return undefined;
     }
@@ -207,12 +273,12 @@ export function getValueByPath(obj: unknown, path: string): unknown {
 
 function scalarToString(val: unknown): string {
   if (val === null || val === undefined) return "";
-  if (typeof val === "string") return val.trim();
+  if (typeof val === "string") return stripCdata(val);
   if (typeof val === "number" || typeof val === "boolean") return String(val);
   if (isRecord(val)) {
     const textVal = val["#text"] ?? val["#cdata"] ?? val["value"];
     if (typeof textVal === "string" || typeof textVal === "number") {
-      return String(textVal).trim();
+      return stripCdata(String(textVal));
     }
   }
   return "";
@@ -324,12 +390,35 @@ const PRODUCT_NODE_HINTS = [
   "kayit",
 ];
 
+const CHILD_NODE_PENALTY_HINTS = [
+  "variant",
+  "varyant",
+  "varriant",
+  "secenek",
+  "subproduct",
+  "option",
+  "image",
+  "gorsel",
+  "resim",
+  "ozellik",
+  "attribute",
+];
+
 function scoreCandidatePath(path: string, count: number): number {
   const parts = path.split(".");
   const lastPart = (parts[parts.length - 1] ?? "").toLowerCase();
-  const depthPenalty = parts.length > 3 ? (parts.length - 3) * 50 : 0;
+  const lowerPath = path.toLowerCase();
+
+  const isChildNode = CHILD_NODE_PENALTY_HINTS.some((h) =>
+    lastPart.includes(h) || lowerPath.includes(`.${h}`)
+  );
+  if (isChildNode) {
+    return -1000 + count;
+  }
+
+  const depthPenalty = parts.length > 2 ? (parts.length - 2) * 50 : 0;
   const hintBonus = PRODUCT_NODE_HINTS.some((h) => lastPart.includes(h))
-    ? 200
+    ? 300
     : 0;
   return count * 10 + hintBonus - depthPenalty;
 }
@@ -350,6 +439,11 @@ function findCandidateItemPaths(doc: Record<string, unknown>): XmlCandidatePath[
           candidates.push({ path: nextPath, count: recordItems.length });
         }
       } else if (isRecord(value)) {
+        const lowerKey = key.toLowerCase();
+        // Kök düğümün kendisi değil, en az 1 derinlikteki ürün nesnesi (depth >= 1) aday olabilir
+        if (depth >= 1 && PRODUCT_NODE_HINTS.some((h) => lowerKey.includes(h))) {
+          candidates.push({ path: nextPath, count: 1 });
+        }
         walk(value, nextPath, depth + 1);
       }
     }
@@ -436,135 +530,325 @@ function findMatchingField(
   const lowerMap = new Map<string, string>();
   for (const fp of fieldPaths) {
     lowerMap.set(fp.toLowerCase(), fp);
+    const cleanFp = fp.replace(/@_/g, "");
+    if (!lowerMap.has(cleanFp.toLowerCase())) {
+      lowerMap.set(cleanFp.toLowerCase(), fp);
+    }
   }
   for (const cand of candidates) {
     const exact = lowerMap.get(cand.toLowerCase());
     if (exact) return exact;
   }
   for (const cand of candidates) {
-    const found = fieldPaths.find((fp) =>
-      fp.toLowerCase().endsWith(`.${cand.toLowerCase()}`)
-    );
+    const candLower = cand.toLowerCase().replace(/@_/g, "");
+    const found = fieldPaths.find((fp) => {
+      const fpLower = fp.toLowerCase();
+      const fpClean = fpLower.replace(/@_/g, "");
+      return fpLower.endsWith(`.${cand.toLowerCase()}`) || fpClean.endsWith(`.${candLower}`);
+    });
     if (found) return found;
   }
   return fallback;
 }
 
+function findVariantChildField(
+  fieldPaths: string[],
+  variantsPath: string,
+  candidates: string[],
+  fallback: string
+): string {
+  if (!variantsPath) return fallback;
+  const prefix = `${variantsPath.toLowerCase()}.`;
+  const childFields: Array<{ raw: string; cleanRelative: string }> = [];
+
+  for (const fp of fieldPaths) {
+    if (fp.toLowerCase().startsWith(prefix)) {
+      const rel = fp.slice(prefix.length);
+      childFields.push({
+        raw: rel,
+        cleanRelative: rel.replace(/^@_/, ""),
+      });
+    }
+  }
+
+  if (childFields.length === 0) {
+    return fallback;
+  }
+
+  for (const cand of candidates) {
+    const candLower = cand.toLowerCase();
+    const candClean = candLower.replace(/^@_/, "");
+    const match = childFields.find(
+      (cf) =>
+        cf.raw.toLowerCase() === candLower ||
+        cf.cleanRelative.toLowerCase() === candClean
+    );
+    if (match) {
+      return match.raw;
+    }
+  }
+
+  return fallback;
+}
+
 function buildSuggestedMapping(fieldPaths: string[]): FeedMapping {
-  return {
-    ...DEFAULT_FEED_MAPPING,
-    externalIdPath: findMatchingField(
-      fieldPaths,
-      ["UrunKodu", "UrunID", "ProductId", "id", "g:id", "Kod", "TedarikciKodu"],
-      DEFAULT_FEED_MAPPING.externalIdPath
-    ),
-    skuPath: findMatchingField(
-      fieldPaths,
-      ["StokKodu", "SKU", "Sku", "UrunKodu", "ModelKodu"],
-      DEFAULT_FEED_MAPPING.skuPath
-    ),
-    barcodePath: findMatchingField(
-      fieldPaths,
-      ["Barkod", "Barcode", "Ean", "EAN", "gtin", "g:gtin"],
-      DEFAULT_FEED_MAPPING.barcodePath
-    ),
-    titlePath: findMatchingField(
-      fieldPaths,
-      ["Baslik", "UrunAdi", "Ad", "Title", "Name", "title", "g:title"],
-      DEFAULT_FEED_MAPPING.titlePath
-    ),
-    subtitlePath: findMatchingField(
-      fieldPaths,
-      ["AltBaslik", "KisaAciklama", "Subtitle"],
-      ""
-    ),
-    descriptionPath: findMatchingField(
-      fieldPaths,
-      ["Aciklama", "Detay", "Description", "description", "g:description"],
-      DEFAULT_FEED_MAPPING.descriptionPath
-    ),
-    brandPath: findMatchingField(
-      fieldPaths,
-      ["Marka", "Brand", "brand", "g:brand"],
-      DEFAULT_FEED_MAPPING.brandPath
-    ),
-    categoryPath: findMatchingField(
-      fieldPaths,
-      [
-        "Kategori",
-        "KategoriYolu",
-        "Category",
-        "CategoryPath",
-        "category",
-        "g:product_type",
-      ],
-      DEFAULT_FEED_MAPPING.categoryPath
-    ),
-    pricePath: findMatchingField(
-      fieldPaths,
-      [
-        "SatisFiyati",
-        "Fiyat",
-        "Price",
-        "IndirimliFiyat",
-        "price",
-        "g:price",
-      ],
-      DEFAULT_FEED_MAPPING.pricePath
-    ),
-    compareAtPricePath: findMatchingField(
+  const externalIdPath = findMatchingField(
+    fieldPaths,
+    [
+      "product_code",
+      "product_id",
+      "UrunKodu",
+      "UrunID",
+      "ProductId",
+      "id",
+      "g:id",
+      "Kod",
+      "TedarikciKodu",
+    ],
+    DEFAULT_FEED_MAPPING.externalIdPath
+  );
+
+  const skuPath = findMatchingField(
+    fieldPaths,
+    [
+      "product_code",
+      "product_model",
+      "StokKodu",
+      "SKU",
+      "Sku",
+      "UrunKodu",
+      "ModelKodu",
+    ],
+    DEFAULT_FEED_MAPPING.skuPath
+  );
+
+  const barcodePath = findMatchingField(
+    fieldPaths,
+    ["Barkod", "Barcode", "Ean", "EAN", "gtin", "g:gtin", "barcode"],
+    DEFAULT_FEED_MAPPING.barcodePath
+  );
+
+  const titlePath = findMatchingField(
+    fieldPaths,
+    [
+      "product_name",
+      "Baslik",
+      "UrunAdi",
+      "Ad",
+      "Title",
+      "Name",
+      "title",
+      "g:title",
+    ],
+    DEFAULT_FEED_MAPPING.titlePath
+  );
+
+  const subtitlePath = findMatchingField(
+    fieldPaths,
+    ["AltBaslik", "KisaAciklama", "Subtitle"],
+    ""
+  );
+
+  const descriptionPath = findMatchingField(
+    fieldPaths,
+    [
+      "product_description",
+      "Aciklama",
+      "Detay",
+      "Description",
+      "description",
+      "g:description",
+    ],
+    DEFAULT_FEED_MAPPING.descriptionPath
+  );
+
+  const brandPath = findMatchingField(
+    fieldPaths,
+    ["Marka", "Brand", "brand", "g:brand"],
+    DEFAULT_FEED_MAPPING.brandPath
+  );
+
+  const categoryPath = findMatchingField(
+    fieldPaths,
+    [
+      "Kategori",
+      "KategoriYolu",
+      "Category",
+      "CategoryPath",
+      "category",
+      "g:product_type",
+    ],
+    DEFAULT_FEED_MAPPING.categoryPath
+  );
+
+  const pricePath = findMatchingField(
+    fieldPaths,
+    [
+      "sale_price",
+      "SatisFiyati",
+      "Fiyat",
+      "Price",
+      "IndirimliFiyat",
+      "price",
+      "g:price",
+    ],
+    DEFAULT_FEED_MAPPING.pricePath
+  );
+
+  let compareAtPricePath = DEFAULT_FEED_MAPPING.compareAtPricePath;
+  if (pricePath.toLowerCase() === "sale_price" && fieldPaths.map((f) => f.toLowerCase()).includes("price")) {
+    compareAtPricePath = "price";
+  } else {
+    compareAtPricePath = findMatchingField(
       fieldPaths,
       ["PiyasaFiyati", "ListeFiyati", "EskiFiyat", "CompareAtPrice", "MarketPrice"],
       DEFAULT_FEED_MAPPING.compareAtPricePath
-    ),
-    costPricePath: findMatchingField(
-      fieldPaths,
-      ["AlisFiyati", "BayiFiyati", "Maliyet", "CostPrice"],
-      DEFAULT_FEED_MAPPING.costPricePath
-    ),
-    currencyPath: findMatchingField(
-      fieldPaths,
-      ["ParaBirimi", "Doviz", "Currency"],
-      DEFAULT_FEED_MAPPING.currencyPath
-    ),
-    taxRatePath: findMatchingField(
-      fieldPaths,
-      ["KdvOrani", "KDV", "TaxRate", "Vat"],
-      DEFAULT_FEED_MAPPING.taxRatePath
-    ),
-    stockPath: findMatchingField(
-      fieldPaths,
-      ["Stok", "StokAdedi", "Miktar", "Stock", "Quantity"],
-      DEFAULT_FEED_MAPPING.stockPath
-    ),
-    weightGramsPath: findMatchingField(
-      fieldPaths,
-      ["AgirlikGram", "Agirlik", "Desi", "Weight"],
-      DEFAULT_FEED_MAPPING.weightGramsPath
-    ),
-    imagesPath: findMatchingField(
-      fieldPaths,
-      [
-        "Gorseller.Gorsel",
-        "Resimler.Resim",
-        "Images.Image",
-        "ResimUrl",
-        "Gorsel",
-        "ImageUrl",
-        "g:image_link",
-      ],
-      DEFAULT_FEED_MAPPING.imagesPath
-    ),
-    variantsPath: findMatchingField(
-      fieldPaths,
-      ["Varyantlar.Varyant", "Secenekler.Secenek", "Variants.Variant"],
-      DEFAULT_FEED_MAPPING.variantsPath
-    ),
-    attributesPath: findMatchingField(
-      fieldPaths,
-      ["Ozellikler.Ozellik", "TeknikOzellikler.Ozellik", "Attributes.Attribute"],
-      DEFAULT_FEED_MAPPING.attributesPath
-    ),
+    );
+  }
+
+  const costPricePath = findMatchingField(
+    fieldPaths,
+    ["buy_price", "AlisFiyati", "BayiFiyati", "Maliyet", "CostPrice"],
+    DEFAULT_FEED_MAPPING.costPricePath
+  );
+
+  const currencyPath = findMatchingField(
+    fieldPaths,
+    ["ParaBirimi", "Doviz", "Currency", "currency"],
+    DEFAULT_FEED_MAPPING.currencyPath
+  );
+
+  const taxRatePath = findMatchingField(
+    fieldPaths,
+    ["KdvOrani", "KDV", "TaxRate", "Vat", "vat"],
+    DEFAULT_FEED_MAPPING.taxRatePath
+  );
+
+  const stockPath = findMatchingField(
+    fieldPaths,
+    ["Stok", "StokAdedi", "Miktar", "Stock", "Quantity", "stock"],
+    DEFAULT_FEED_MAPPING.stockPath
+  );
+
+  const weightGramsPath = findMatchingField(
+    fieldPaths,
+    ["AgirlikGram", "Agirlik", "Desi", "Weight", "desi"],
+    DEFAULT_FEED_MAPPING.weightGramsPath
+  );
+
+  const imagesPath = findMatchingField(
+    fieldPaths,
+    [
+      "images.image",
+      "Gorseller.Gorsel",
+      "Resimler.Resim",
+      "Images.Image",
+      "ResimUrl",
+      "Gorsel",
+      "ImageUrl",
+      "g:image_link",
+    ],
+    DEFAULT_FEED_MAPPING.imagesPath
+  );
+
+  const variantsPath = findMatchingField(
+    fieldPaths,
+    [
+      "varriants.variant",
+      "variants.variant",
+      "Varyantlar.Varyant",
+      "Secenekler.Secenek",
+      "Variants.Variant",
+      "urun_secenek.secenek",
+      "subproducts.subproduct",
+      "varriants",
+      "variants",
+    ],
+    DEFAULT_FEED_MAPPING.variantsPath
+  );
+
+  const variantSkuPath = findVariantChildField(
+    fieldPaths,
+    variantsPath,
+    ["Sku", "@_Sku", "StokKodu", "SKU", "Barkod", "Barcode"],
+    DEFAULT_FEED_MAPPING.variantSkuPath
+  );
+
+  const variantBarcodePath = findVariantChildField(
+    fieldPaths,
+    variantsPath,
+    ["Barkod", "Barcode", "Ean", "@_Barkod", "@_Barcode", "gtin"],
+    DEFAULT_FEED_MAPPING.variantBarcodePath
+  );
+
+  const variantTitlePath = findVariantChildField(
+    fieldPaths,
+    variantsPath,
+    ["Baslik", "Title", "@_Baslik", "@_Title", "Name"],
+    DEFAULT_FEED_MAPPING.variantTitlePath
+  );
+
+  const variantPricePath = findVariantChildField(
+    fieldPaths,
+    variantsPath,
+    ["Fiyat", "Price", "@_Fiyat", "@_Price", "SatisFiyati"],
+    DEFAULT_FEED_MAPPING.variantPricePath
+  );
+
+  const variantStockPath = findVariantChildField(
+    fieldPaths,
+    variantsPath,
+    ["Stock", "@_Stock", "Stok", "Miktar", "@_Stok", "Quantity"],
+    DEFAULT_FEED_MAPPING.variantStockPath
+  );
+
+  const variantOption1Path = findVariantChildField(
+    fieldPaths,
+    variantsPath,
+    ["Renk", "@_Renk", "Color", "@_Color"],
+    DEFAULT_FEED_MAPPING.variantOption1Path
+  );
+
+  const variantOption2Path = findVariantChildField(
+    fieldPaths,
+    variantsPath,
+    ["Beden", "@_Beden", "Size", "@_Size"],
+    DEFAULT_FEED_MAPPING.variantOption2Path
+  );
+
+  const attributesPath = findMatchingField(
+    fieldPaths,
+    ["Ozellikler.Ozellik", "TeknikOzellikler.Ozellik", "Attributes.Attribute"],
+    DEFAULT_FEED_MAPPING.attributesPath
+  );
+
+  return {
+    ...DEFAULT_FEED_MAPPING,
+    externalIdPath,
+    skuPath,
+    barcodePath,
+    titlePath,
+    subtitlePath,
+    descriptionPath,
+    brandPath,
+    categoryPath,
+    pricePath,
+    compareAtPricePath,
+    costPricePath,
+    currencyPath,
+    taxRatePath,
+    stockPath,
+    weightGramsPath,
+    imagesPath,
+    variantsPath,
+    variantSkuPath,
+    variantBarcodePath,
+    variantTitlePath,
+    variantPricePath,
+    variantStockPath,
+    variantOption1Path,
+    variantOption2Path,
+    attributesPath,
   };
 }
 

@@ -115,8 +115,8 @@ export const iyzicoAdapter: PaymentAdapter = {
       return {
         ok: true,
         provider: "iyzico",
-        paymentState: "CAPTURED",
-        orderPaymentStatus: "PAID",
+        paymentState: "PENDING",
+        orderPaymentStatus: "PENDING",
         providerRef: simToken,
         simulated: true,
         checkoutFormContent,
@@ -337,6 +337,15 @@ export async function verifyIyzicoCheckoutToken(params: {
   if (token.startsWith("sim_iyzico_")) {
     const parts = token.split("_");
     const orderId = parts[2] ?? undefined;
+    if (token.includes("_fail") || token.includes("_decline")) {
+      return {
+        ok: false,
+        paymentId: token,
+        conversationId: orderId,
+        errorMessage: "Simüle edilmiş kart reddi (yetersiz bakiye / 3DS reddi).",
+        raw: { simulated: true, token, status: "failure" },
+      };
+    }
     return {
       ok: true,
       paymentId: token,

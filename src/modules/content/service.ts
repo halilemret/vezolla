@@ -3,6 +3,11 @@ import { db } from "@/lib/db";
 import { ensureUniqueSlug } from "@/lib/slug";
 import type { Prisma } from "@/generated/prisma/client";
 import { getStoreSettings } from "@/lib/settings/service";
+import {
+  earnLoyaltyPoints,
+  PHOTO_REVIEW_POINTS,
+  TEXT_REVIEW_POINTS,
+} from "@/modules/loyalty/service";
 
 export async function createOrUpdatePage(input: {
   id?: string;
@@ -401,6 +406,11 @@ export async function submitProductReview(input: {
   rating: number;
   title?: string;
   body: string;
+  heightCm?: number | null;
+  weightKg?: number | null;
+  sizePurchased?: string | null;
+  fitRating?: string | null;
+  images?: string[];
 }) {
   const store = await getStoreSettings();
   const rating = Math.min(5, Math.max(1, Math.round(input.rating)));
@@ -430,6 +440,7 @@ export async function submitProductReview(input: {
   }
 
   const status = store.autoApproveReviews ? "APPROVED" : "PENDING";
+  const images = Array.isArray(input.images) ? input.images.filter(Boolean) : [];
 
   const review = await db.review.create({
     data: {
@@ -442,11 +453,25 @@ export async function submitProductReview(input: {
       body: input.body.trim(),
       status,
       isVerifiedPurchase,
+      heightCm: input.heightCm ?? null,
+      weightKg: input.weightKg ?? null,
+      sizePurchased: input.sizePurchased?.trim() || null,
+      fitRating: input.fitRating?.trim() || null,
+      images,
     },
   });
 
   if (status === "APPROVED") {
     await recalculateProductRating(input.productId);
+    if (input.customerId) {
+      const pointsToAward = images.length > 0 ? PHOTO_REVIEW_POINTS : TEXT_REVIEW_POINTS;
+      await earnLoyaltyPoints({
+        customerId: input.customerId,
+        points: pointsToAward,
+        reason: images.length > 0 ? "PHOTO_REVIEW" : "TEXT_REVIEW",
+        reviewId: review.id,
+      }).catch(() => {});
+    }
   }
 
   return review;
@@ -457,6 +482,10 @@ export async function moderateReview(input: {
   status: "APPROVED" | "REJECTED";
   reply?: string;
 }) {
+  const existingReview = await db.review.findUnique({
+    where: { id: input.reviewId },
+  });
+
   const review = await db.review.update({
     where: { id: input.reviewId },
     data: {
@@ -467,6 +496,25 @@ export async function moderateReview(input: {
   });
 
   await recalculateProductRating(review.productId);
+
+  // Onaylanan fotoğraflı veya metinli yoruma Vezolla Club sadakat puanı kazandır
+  if (
+    input.status === "APPROVED" &&
+    existingReview?.status !== "APPROVED" &&
+    review.customerId
+  ) {
+    const hasPhotos = review.images && review.images.length > 0;
+    const points = hasPhotos ? PHOTO_REVIEW_POINTS : TEXT_REVIEW_POINTS;
+    await earnLoyaltyPoints({
+      customerId: review.customerId,
+      points,
+      reason: hasPhotos ? "PHOTO_REVIEW" : "TEXT_REVIEW",
+      reviewId: review.id,
+    }).catch((err) => {
+      console.error("[Loyalty] Puan kazandırma hatası:", err);
+    });
+  }
+
   return review;
 }
 

@@ -296,4 +296,226 @@ describe("Promosyon Motoru (promotions/engine)", () => {
     expect(successRes.discountTotalMinor).toBe(10000);
     expect(successRes.rejectedCodes).toHaveLength(0);
   });
+
+  it("KOMBIN10 set indirimini sepette tek ürün varken uygulamaz, en az 2 ürün olduğunda %10 uygular", () => {
+    const candidates: PromoCandidate[] = [
+      {
+        id: "kombin-promo",
+        name: "Kombin %10 Set İndirimi",
+        code: "KOMBIN10",
+        type: "PERCENTAGE",
+        value: 1000, // %10
+        conditions: { minItemCount: 2 },
+        usageCount: 0,
+        isActive: true,
+        isCombinable: true,
+        priority: 20,
+      },
+    ];
+
+    // Tek ürün varken (diğer 2 ürün çıkarıldığında)
+    const singleLine: PromoLineInput[] = [
+      {
+        lineId: "line-main",
+        variantId: "var-main",
+        productId: "prod-main",
+        categoryIds: ["cat-elbise"],
+        quantity: 1,
+        unitPriceMinor: 100000, // 1000 TL
+      },
+    ];
+
+    const singleRes = evaluatePromotions(candidates, {
+      lines: singleLine,
+      enteredCodes: ["KOMBIN10"],
+    });
+
+    expect(singleRes.discountTotalMinor).toBe(0);
+    expect(singleRes.appliedPromotions).toHaveLength(0);
+    expect(singleRes.rejectedCodes).toHaveLength(1);
+    expect(singleRes.rejectedCodes[0]?.reason).toContain("en az 2 parça");
+
+    // İki ürün varken (gerçek kombin seti)
+    const bundleLines: PromoLineInput[] = [
+      ...singleLine,
+      {
+        lineId: "line-acc",
+        variantId: "var-acc",
+        productId: "prod-acc",
+        categoryIds: ["cat-canta"],
+        quantity: 1,
+        unitPriceMinor: 50000, // 500 TL
+      },
+    ];
+
+    const bundleRes = evaluatePromotions(candidates, {
+      lines: bundleLines,
+      enteredCodes: ["KOMBIN10"],
+    });
+
+    // Toplam 1500 TL, %10 = 150 TL (15000 kuruş)
+    expect(bundleRes.subtotalMinor).toBe(150000);
+    expect(bundleRes.discountTotalMinor).toBe(15000);
+    expect(bundleRes.appliedPromotions).toHaveLength(1);
+    expect(bundleRes.rejectedCodes).toHaveLength(0);
+  });
+
+  it("KOMBIN10 indirimini yalnızca kombin parçalarına uygular, sepetteki diğer harici ürünlere indirim uygulamaz", () => {
+    const candidates: PromoCandidate[] = [
+      {
+        id: "kombin-promo-1",
+        name: "Kombin %10 Set İndirimi",
+        code: "KOMBIN10:VAR-SHIRT,VAR-PANTS",
+        type: "PERCENTAGE",
+        value: 1000, // %10
+        conditions: {
+          variantIds: ["var-shirt", "var-pants"],
+          minItemCount: 2,
+        },
+        usageCount: 0,
+        isActive: true,
+        isCombinable: true,
+        priority: 20,
+      },
+    ];
+
+    const linesWithUnrelatedItem: PromoLineInput[] = [
+      {
+        lineId: "line-shirt",
+        variantId: "var-shirt",
+        productId: "prod-shirt",
+        categoryIds: ["cat-ust"],
+        quantity: 1,
+        unitPriceMinor: 200000, // 2000 TL
+      },
+      {
+        lineId: "line-pants",
+        variantId: "var-pants",
+        productId: "prod-pants",
+        categoryIds: ["cat-alt"],
+        quantity: 1,
+        unitPriceMinor: 100000, // 1000 TL
+      },
+      {
+        lineId: "line-coat",
+        variantId: "var-coat",
+        productId: "prod-coat",
+        categoryIds: ["cat-dis"],
+        quantity: 1,
+        unitPriceMinor: 500000, // 5000 TL (Kombine dahil olmayan harici ürün)
+      },
+    ];
+
+    const res = evaluatePromotions(candidates, {
+      lines: linesWithUnrelatedItem,
+      enteredCodes: ["KOMBIN10:VAR-SHIRT,VAR-PANTS"],
+    });
+
+    // Toplam sepet tutarı: 2000 + 1000 + 5000 = 8000 TL (800000 kuruş)
+    expect(res.subtotalMinor).toBe(800000);
+
+    // İndirim yalnızca shirt (200 TL) ve pants (100 TL) için geçerli: toplam 300 TL (30000 kuruş)
+    expect(res.discountTotalMinor).toBe(30000);
+    expect(res.lineDiscounts["line-shirt"]).toBe(20000);
+    expect(res.lineDiscounts["line-pants"]).toBe(10000);
+    // Harici mont ürününe sıfır indirim uygulanmalı
+    expect(res.lineDiscounts["line-coat"]).toBe(0);
+    expect(res.appliedPromotions).toHaveLength(1);
+    expect(res.rejectedCodes).toHaveLength(0);
+  });
+
+  it("Kombin parçalarından biri çıkarıldığında sepette harici başka ürün olsa bile kombin indirimi uygulanmaz", () => {
+    const candidates: PromoCandidate[] = [
+      {
+        id: "kombin-promo-1",
+        name: "Kombin %10 Set İndirimi",
+        code: "KOMBIN10:VAR-SHIRT,VAR-PANTS",
+        type: "PERCENTAGE",
+        value: 1000, // %10
+        conditions: {
+          variantIds: ["var-shirt", "var-pants"],
+          minItemCount: 2,
+        },
+        usageCount: 0,
+        isActive: true,
+        isCombinable: true,
+        priority: 20,
+      },
+    ];
+
+    // Kullanıcı 'var-pants' ürününü sepetten çıkardı, sepette sadece 'var-shirt' ve harici 'var-coat' kaldı (toplam 2 adet ürün)
+    const linesMissingOneBundlePiece: PromoLineInput[] = [
+      {
+        lineId: "line-shirt",
+        variantId: "var-shirt",
+        productId: "prod-shirt",
+        categoryIds: ["cat-ust"],
+        quantity: 1,
+        unitPriceMinor: 200000, // 2000 TL
+      },
+      {
+        lineId: "line-coat",
+        variantId: "var-coat",
+        productId: "prod-coat",
+        categoryIds: ["cat-dis"],
+        quantity: 1,
+        unitPriceMinor: 500000, // 5000 TL (Kombine ait olmayan harici ürün)
+      },
+    ];
+
+    const res = evaluatePromotions(candidates, {
+      lines: linesMissingOneBundlePiece,
+      enteredCodes: ["KOMBIN10:VAR-SHIRT,VAR-PANTS"],
+    });
+
+    // Kombin parçalarından yalnızca 1'i kaldığı için set bozulmuştur, 0 indirim uygulanmalıdır
+    expect(res.discountTotalMinor).toBe(0);
+    expect(res.lineDiscounts["line-shirt"]).toBe(0);
+    expect(res.lineDiscounts["line-coat"]).toBe(0);
+    expect(res.appliedPromotions).toHaveLength(0);
+    expect(res.rejectedCodes).toHaveLength(1);
+    expect(res.rejectedCodes[0]?.reason).toContain("en az 2 parça");
+  });
+
+  it("Kombine ait tek varyanttan 2 adet eklense dahi farklı parça olmadığı için kombin indirimi uygulanmaz", () => {
+    const candidates: PromoCandidate[] = [
+      {
+        id: "kombin-promo-1",
+        name: "Kombin %10 Set İndirimi",
+        code: "KOMBIN10:VAR-SHIRT,VAR-PANTS",
+        type: "PERCENTAGE",
+        value: 1000,
+        conditions: {
+          variantIds: ["var-shirt", "var-pants"],
+          minItemCount: 2,
+        },
+        usageCount: 0,
+        isActive: true,
+        isCombinable: true,
+        priority: 20,
+      },
+    ];
+
+    // Aynı gömlekten 2 adet sepette, pantolon yok
+    const linesTwoOfSameItem: PromoLineInput[] = [
+      {
+        lineId: "line-shirt",
+        variantId: "var-shirt",
+        productId: "prod-shirt",
+        categoryIds: ["cat-ust"],
+        quantity: 2,
+        unitPriceMinor: 200000,
+      },
+    ];
+
+    const res = evaluatePromotions(candidates, {
+      lines: linesTwoOfSameItem,
+      enteredCodes: ["KOMBIN10:VAR-SHIRT,VAR-PANTS"],
+    });
+
+    expect(res.discountTotalMinor).toBe(0);
+    expect(res.appliedPromotions).toHaveLength(0);
+    expect(res.rejectedCodes).toHaveLength(1);
+    expect(res.rejectedCodes[0]?.reason).toContain("en az 2 parça");
+  });
 });

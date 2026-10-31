@@ -246,4 +246,91 @@ describe("Katalog Servisi: Kategori Ağacı Oluşturma", () => {
     expect(leaf?.depth).toBe(2);
     expect(leaf?.pathNames).toEqual(["Kadın Giyim", "Dış Giyim", "Trençkot"]);
   });
+
+  it("upsertProduct ile çoklu kategori, görsel, varyant ve özel alanları tek işlemde hatasız ve hızlıca kaydeder", async () => {
+    const { upsertProduct, softDeleteProduct } = await import("@/modules/catalog/service");
+    const testNonce = Date.now().toString(36);
+
+    const created = await upsertProduct({
+      title: `Test Timeout Trençkot ${testNonce}`,
+      status: "DRAFT",
+      tagNames: ["yeni", "sezon", "trend"],
+      categoryIds: [],
+      collectionIds: [],
+      images: [
+        { url: "https://example.com/img1.jpg", alt: "Görsel 1", width: 800, height: 1200 },
+        { url: "https://example.com/img2.jpg", alt: "Görsel 2", width: 800, height: 1200 },
+      ],
+      options: [
+        { name: "Renk", values: [{ value: "Bej" }, { value: "Siyah" }] },
+        { name: "Beden", values: [{ value: "S" }, { value: "M" }] },
+      ],
+      attributes: [],
+      variants: [
+        {
+          title: "Bej / S",
+          sku: `TEST-TNC-${testNonce}-BEJ-S`,
+          price: 199900,
+          isActive: true,
+          trackInventory: true,
+          allowBackorder: false,
+          stock: 10,
+          optionValues: [
+            { optionName: "Renk", value: "Bej" },
+            { optionName: "Beden", value: "S" },
+          ],
+        },
+        {
+          title: "Siyah / M",
+          sku: `TEST-TNC-${testNonce}-SYH-M`,
+          price: 199900,
+          isActive: true,
+          trackInventory: true,
+          allowBackorder: false,
+          stock: 5,
+          optionValues: [
+            { optionName: "Renk", value: "Siyah" },
+            { optionName: "Beden", value: "M" },
+          ],
+        },
+      ],
+    });
+
+    expect(created.id).toBeDefined();
+    expect(created.title).toBe(`Test Timeout Trençkot ${testNonce}`);
+
+    // Güncelleme testini de doğrula
+    const updated = await upsertProduct({
+      id: created.id,
+      title: `Test Timeout Trençkot Güncellendi ${testNonce}`,
+      status: "ACTIVE",
+      tagNames: ["yeni", "populer"],
+      categoryIds: [],
+      collectionIds: [],
+      images: [
+        { url: "https://example.com/img1.jpg", alt: "Görsel 1", width: 800, height: 1200 },
+      ],
+      options: [
+        { name: "Renk", values: [{ value: "Bej" }] },
+      ],
+      attributes: [],
+      variants: [
+        {
+          title: "Bej",
+          sku: `TEST-TNC-${testNonce}-BEJ-S`,
+          price: 219900,
+          isActive: true,
+          trackInventory: true,
+          allowBackorder: false,
+          stock: 8,
+          optionValues: [{ optionName: "Renk", value: "Bej" }],
+        },
+      ],
+    });
+
+    expect(updated.id).toBe(created.id);
+    expect(updated.title).toBe(`Test Timeout Trençkot Güncellendi ${testNonce}`);
+
+    await softDeleteProduct(created.id);
+  });
 });

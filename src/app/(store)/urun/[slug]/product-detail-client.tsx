@@ -11,6 +11,13 @@ import {
   WarningCircle as AlertCircle,
   Star,
   Package,
+  Clock,
+  ArrowRight,
+  Ruler,
+  CaretLeft,
+  CaretRight,
+  Sparkle,
+  Crown,
 } from "@phosphor-icons/react";
 import { formatMoney } from "@/lib/money";
 import { Button } from "@/components/ui/button";
@@ -21,6 +28,10 @@ import { Badge } from "@/components/ui/badge";
 import { addCartItemAction } from "@/modules/checkout/actions";
 import { trackStoreEvent } from "@/components/store/visitor-tracker";
 import { useWishlist } from "@/components/store/wishlist-context";
+import { useCart } from "@/components/store/cart-context";
+import { InstallmentModal } from "@/components/store/installment-modal";
+import type { InstallmentSettings, ClubSettings } from "@/lib/settings/schemas";
+import { SizeGuideModal, resolveSizeGuideKind } from "@/components/store/size-guide-modal";
 import {
   requestBackInStockStoreAction,
   toggleWishlistStoreAction,
@@ -40,6 +51,7 @@ export interface ClientProductVariant {
   barcode: string | null;
   effectivePrice: number;
   compareAtPrice: number | null;
+  clubPrice?: number | null;
   availableStock: number;
   trackInventory: boolean;
   allowBackorder: boolean;
@@ -64,6 +76,13 @@ interface ProductDetailClientProps {
   variants: ClientProductVariant[];
   initialWishlisted: boolean;
   customerEmail: string | null;
+  installmentSettings?: InstallmentSettings;
+  sizeGuideType?: string | null;
+  sizeGuideData?: string | null;
+  categoryName?: string | null;
+  productClubPrice?: number | null;
+  isCustomerLoggedIn?: boolean;
+  clubSettings?: ClubSettings | null;
 }
 
 export function ProductDetailClient({
@@ -76,6 +95,13 @@ export function ProductDetailClient({
   variants,
   initialWishlisted,
   customerEmail,
+  installmentSettings,
+  sizeGuideType,
+  sizeGuideData,
+  categoryName,
+  productClubPrice,
+  isCustomerLoggedIn,
+  clubSettings,
 }: ProductDetailClientProps) {
   const router = useRouter();
   const defaultVariant =
@@ -92,12 +118,14 @@ export function ProductDetailClient({
   );
   const [quantity, setQuantity] = React.useState<number>(1);
   const [adding, setAdding] = React.useState(false);
+  const [buyingNow, setBuyingNow] = React.useState(false);
   const [cartNotice, setCartNotice] = React.useState<{
     ok: boolean;
     message: string;
   } | null>(null);
 
   const { isWishlisted: checkWishlist, toggleWishlist: contextToggleWishlist } = useWishlist();
+  const { addItem } = useCart();
   const [wishlisted, setWishlisted] = React.useState(initialWishlisted);
   const isCurrentlyWishlisted = checkWishlist(productId) || wishlisted;
   const [wishlistMessage, setWishlistMessage] = React.useState<string | null>(null);
@@ -108,6 +136,93 @@ export function ProductDetailClient({
     message: string;
   } | null>(null);
   const [submittingStock, setSubmittingStock] = React.useState(false);
+  const [fitFinderOpen, setFitFinderOpen] = React.useState(false);
+
+  const currentImageIndex = React.useMemo(() => {
+    const idx = images.findIndex((img) => img.url === activeImageUrl);
+    return idx >= 0 ? idx : 0;
+  }, [images, activeImageUrl]);
+
+  const handlePrevImage = React.useCallback(() => {
+    if (images.length <= 1) return;
+    const prevIndex = (currentImageIndex - 1 + images.length) % images.length;
+    const prevImg = images[prevIndex];
+    if (prevImg) setActiveImageUrl(prevImg.url);
+  }, [currentImageIndex, images]);
+
+  const handleNextImage = React.useCallback(() => {
+    if (images.length <= 1) return;
+    const nextIndex = (currentImageIndex + 1) % images.length;
+    const nextImg = images[nextIndex];
+    if (nextImg) setActiveImageUrl(nextImg.url);
+  }, [currentImageIndex, images]);
+
+  const touchStartX = React.useRef<number | null>(null);
+  const touchEndX = React.useRef<number | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const firstTouch = e.targetTouches[0];
+    if (firstTouch) {
+      touchStartX.current = firstTouch.clientX;
+    }
+    touchEndX.current = null;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    const firstTouch = e.targetTouches[0];
+    if (firstTouch) {
+      touchEndX.current = firstTouch.clientX;
+    }
+  };
+
+  const handleTouchEnd = () => {
+    if (touchStartX.current !== null && touchEndX.current !== null) {
+      const diff = touchStartX.current - touchEndX.current;
+      if (diff > 40) {
+        handleNextImage();
+      } else if (diff < -40) {
+        handlePrevImage();
+      }
+    }
+    touchStartX.current = null;
+    touchEndX.current = null;
+  };
+
+  const sizeGuideKind = resolveSizeGuideKind(
+    sizeGuideType,
+    categoryName,
+    productTitle,
+    sizeGuideData
+  );
+
+  function handleFitFinderSelect(calculatedSize: string) {
+    const sizeOpt = options.find(
+      (o) =>
+        o.name.toLowerCase().includes("beden") ||
+        o.name.toLowerCase().includes("size")
+    );
+    if (sizeOpt) {
+      const matched = sizeOpt.values.find(
+        (v) =>
+          v.value.toLowerCase() === calculatedSize.toLowerCase() ||
+          calculatedSize.toLowerCase().includes(v.value.toLowerCase()) ||
+          v.value.toLowerCase().includes(calculatedSize.toLowerCase())
+      );
+      if (matched) {
+        handleOptionSelect(sizeOpt.name, matched.value);
+        return;
+      }
+    }
+
+    const matchedVariant = variants.find(
+      (v) =>
+        v.title.toLowerCase().includes(calculatedSize.toLowerCase()) ||
+        calculatedSize.toLowerCase().includes(v.title.toLowerCase())
+    );
+    if (matchedVariant) {
+      setSelectedVariantId(matchedVariant.id);
+    }
+  }
 
   const selectedVariant = React.useMemo(() => {
     if (options.length > 0) {
@@ -166,7 +281,7 @@ export function ProductDetailClient({
     setCartNotice(null);
 
     try {
-      const res = await addCartItemAction(selectedVariant.id, quantity);
+      const res = await addItem(selectedVariant.id, quantity);
       if (!res.ok) {
         setCartNotice({
           ok: false,
@@ -183,10 +298,35 @@ export function ProductDetailClient({
           ok: true,
           message: `${quantity} adet "${productTitle}" sepetinize eklendi.`,
         });
-        router.refresh();
       }
     } finally {
       setAdding(false);
+    }
+  }
+
+  async function handleBuyNow() {
+    if (!selectedVariant) return;
+    setBuyingNow(true);
+    setCartNotice(null);
+
+    try {
+      const res = await addItem(selectedVariant.id, quantity, { openDrawer: false });
+      if (!res.ok) {
+        setCartNotice({
+          ok: false,
+          message: res.error ?? "Hızlı satın alma başlatılamadı.",
+        });
+      } else {
+        trackStoreEvent({
+          type: "add_to_cart",
+          productId,
+          variantId: selectedVariant.id,
+          meta: { quantity, source: "buy_now_express" },
+        });
+        router.push("/odeme");
+      }
+    } finally {
+      setBuyingNow(false);
     }
   }
 
@@ -225,7 +365,12 @@ export function ProductDetailClient({
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:gap-8">
       {/* Sol Kolon: Görsel Galerisi */}
       <div className="lg:col-span-5 space-y-2.5">
-        <div className="relative aspect-[3/4] max-h-[440px] sm:max-h-[480px] w-full overflow-hidden rounded-xl border border-border bg-muted/20 shadow-xs flex items-center justify-center">
+        <div
+          className="relative aspect-[3/4] max-h-[440px] sm:max-h-[480px] w-full overflow-hidden rounded-xl border border-border bg-muted/20 shadow-xs flex items-center justify-center select-none"
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+        >
           {activeImageUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -240,10 +385,34 @@ export function ProductDetailClient({
             </div>
           )}
           {discountPercent && discountPercent > 0 ? (
-            <span className="absolute left-3 top-3 rounded-md bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white shadow-xs">
+            <span className="absolute left-3 top-3 z-10 rounded-md bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white shadow-xs">
               %{discountPercent} İndirim
             </span>
           ) : null}
+
+          {images.length > 1 && (
+            <>
+              <button
+                type="button"
+                onClick={handlePrevImage}
+                aria-label="Önceki fotoğraf"
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-zinc-900 shadow-md hover:bg-white active:scale-95 transition-all dark:bg-zinc-900/90 dark:text-zinc-100 dark:hover:bg-zinc-900 border border-border/40 cursor-pointer"
+              >
+                <CaretLeft className="h-5 w-5" weight="bold" />
+              </button>
+              <button
+                type="button"
+                onClick={handleNextImage}
+                aria-label="Sonraki fotoğraf"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-zinc-900 shadow-md hover:bg-white active:scale-95 transition-all dark:bg-zinc-900/90 dark:text-zinc-100 dark:hover:bg-zinc-900 border border-border/40 cursor-pointer"
+              >
+                <CaretRight className="h-5 w-5" weight="bold" />
+              </button>
+              <span className="absolute bottom-2.5 right-2.5 z-10 rounded-md bg-black/60 px-2 py-0.5 text-[10px] font-mono font-medium text-white backdrop-blur-xs">
+                {currentImageIndex + 1} / {images.length}
+              </span>
+            </>
+          )}
         </div>
 
         {images.length > 1 && (
@@ -305,25 +474,99 @@ export function ProductDetailClient({
 
             <div>
               {inStock ? (
-                <Badge variant="success">
-                  {selectedVariant && selectedVariant.trackInventory
-                    ? `Stokta (${selectedVariant.availableStock} adet)`
-                    : "Stokta Var"}
-                </Badge>
+                selectedVariant &&
+                selectedVariant.trackInventory &&
+                !selectedVariant.allowBackorder &&
+                selectedVariant.availableStock <= 5 &&
+                selectedVariant.availableStock > 0 ? (
+                  <Badge variant="warning" className="gap-1.5 font-bold">
+                    <Clock className="h-3.5 w-3.5" weight="bold" />
+                    <span>Tükenmek Üzere</span>
+                  </Badge>
+                ) : (
+                  <Badge variant="success">Stokta Var</Badge>
+                )
               ) : (
                 <Badge variant="danger">Tükendi</Badge>
               )}
             </div>
           </div>
 
-          {selectedVariant && (selectedVariant.sku || selectedVariant.barcode) && (
-            <div className="pt-1 flex flex-wrap gap-4 text-xs text-muted-foreground font-mono">
-              {selectedVariant.sku && <span>SKU: {selectedVariant.sku}</span>}
-              {selectedVariant.barcode && (
-                <span>Barkod: {selectedVariant.barcode}</span>
-              )}
+          {/* iyzico Taksit Seçenekleri Tablosu Tetikleyicisi */}
+          {installmentSettings?.enabled !== false && (
+            <div className="pt-1.5 flex items-center justify-between border-t border-[var(--border)]/60">
+              <InstallmentModal
+                priceMinor={selectedVariant?.effectivePrice ?? 0}
+                customFamilies={installmentSettings?.cardFamilies}
+                bannerTitle={installmentSettings?.bannerTitle}
+                bannerSubtitle={installmentSettings?.bannerSubtitle}
+              />
+              <span className="text-[11px] text-muted-foreground">
+                {installmentSettings?.bannerTitle ?? "iyzico Güvencesiyle 9 Taksit"}
+              </span>
             </div>
           )}
+
+          {/* VezollaClub Üyelerine Özel Fiyat */}
+          {(() => {
+            if (clubSettings && !clubSettings.pdpShowMemberPrice) return null;
+            const currentClubPrice = selectedVariant?.clubPrice ?? productClubPrice;
+            if (!currentClubPrice) return null;
+            return (
+              <div className="mt-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-[var(--radius-base,0.5rem)] border border-[var(--border)] bg-[var(--surface)] p-3 shadow-2xs">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-base,0.375rem)] bg-[var(--accent)] text-[var(--accent-fg)] shrink-0">
+                    <Crown className="h-4 w-4" weight="fill" />
+                  </div>
+                  <div>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--muted)]">
+                      {clubSettings?.pdpMemberPriceTitle ?? "VezollaClub Üyelerine Özel Fiyat:"}
+                    </span>
+                    <div className="text-xl font-extrabold text-[var(--ink)] tabular-nums">
+                      {formatMoney(currentClubPrice, "TRY")}
+                    </div>
+                  </div>
+                </div>
+                {!isCustomerLoggedIn && (
+                  <Link
+                    href="/kayit"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-base,0.375rem)] bg-[var(--accent)] hover:opacity-90 text-[var(--accent-fg)] px-3 py-1.5 text-xs font-bold shadow-xs transition-colors shrink-0"
+                  >
+                    <span>{clubSettings?.pdpMemberPriceCtaText ?? "Üye Ol & Bu Fiyatla Al"}</span>
+                    <ArrowRight className="h-3 w-3" weight="bold" />
+                  </Link>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* VezollaClub Sadakat Puanı Rozeti */}
+          {(() => {
+            if (clubSettings && !clubSettings.pdpShowEarningBadge) return null;
+            const effective = selectedVariant?.effectivePrice ?? 0;
+            const priceInTl = Math.round(effective / 100);
+            const earnRate = (clubSettings?.earningRatePercent ?? 10) / 100;
+            const clubPoints = Math.max(1, Math.round(priceInTl * earnRate));
+            const pointValueKurus = clubSettings?.pointValueKurus ?? 50;
+            const cashValueTl = Math.round((clubPoints * pointValueKurus) / 100);
+
+            const template =
+              clubSettings?.pdpEarningBadgeTemplate ??
+              "Bu alışverişinizden {points} VezollaClub Puanı ({value} TL Değerinde) Kazanacaksınız.";
+
+            const renderedText = template
+              .replace("{points}", `${clubPoints} VezollaClub Puanı`)
+              .replace("{value}", String(cashValueTl));
+
+            return (
+              <div className="pt-2">
+                <div className="flex items-center gap-2 rounded-[var(--radius-base,0.375rem)] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2 text-xs text-[var(--ink)]">
+                  <Sparkle className="h-4 w-4 shrink-0 text-[var(--accent)]" weight="fill" />
+                  <span>{renderedText}</span>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Seçenek Matrisi (Örn: Renk, Beden) */}
@@ -334,7 +577,25 @@ export function ProductDetailClient({
               return (
                 <div key={opt.id} className="space-y-2">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-foreground">{opt.name}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-foreground">{opt.name}</span>
+                      {(opt.name.toLowerCase().includes("beden") ||
+                        opt.name.toLowerCase().includes("size")) &&
+                        sizeGuideKind !== "NONE" && (
+                        <button
+                          type="button"
+                          onClick={() => setFitFinderOpen(true)}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--accent)] hover:underline cursor-pointer"
+                        >
+                          <Ruler className="h-3 w-3" />
+                          <span>
+                            {sizeGuideKind === "BRA"
+                              ? "Sütyen Beden Bulucu"
+                              : "Beden Tablosu & Ölçü Rehberi"}
+                          </span>
+                        </button>
+                      )}
+                    </div>
                     <span className="text-muted-foreground">{currentVal}</span>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -345,10 +606,10 @@ export function ProductDetailClient({
                           key={val.id}
                           type="button"
                           onClick={() => handleOptionSelect(opt.name, val.value)}
-                          className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                          className={`rounded-md border px-3.5 py-1.5 text-xs font-semibold transition-all cursor-pointer ${
                             active
-                              ? "border-foreground bg-foreground text-background"
-                              : "border-border bg-card text-foreground hover:bg-muted"
+                              ? "bg-[var(--ink)] text-[var(--card)] ring-2 ring-[var(--ink)] ring-offset-2 ring-offset-[var(--card)] border-transparent shadow-xs font-bold"
+                              : "border-[var(--border)] bg-[var(--card)] text-[var(--ink)] hover:border-[var(--ink)]/50"
                           }`}
                         >
                           {val.value}
@@ -381,36 +642,48 @@ export function ProductDetailClient({
         {/* Sepete Ekle veya Gelince Haber Ver */}
         {inStock ? (
           <form onSubmit={handleAddToCart} className="space-y-3">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2.5">
               <div className="flex items-center rounded-md border border-border bg-card">
                 <button
                   type="button"
                   onClick={() => setQuantity((q) => Math.max(1, q - 1))}
-                  className="h-10 w-10 text-sm font-medium text-foreground hover:bg-muted"
+                  className="h-10 w-9 text-sm font-medium text-foreground hover:bg-muted"
                   aria-label="Miktarı azalt"
                 >
                   -
                 </button>
-                <span className="w-10 text-center text-sm font-medium tabular-nums">
+                <span className="w-8 text-center text-sm font-medium tabular-nums">
                   {quantity}
                 </span>
                 <button
                   type="button"
                   onClick={() => setQuantity((q) => Math.min(maxOrderable, q + 1))}
-                  className="h-10 w-10 text-sm font-medium text-foreground hover:bg-muted"
+                  className="h-10 w-9 text-sm font-medium text-foreground hover:bg-muted"
                   aria-label="Miktarı artır"
                 >
                   +
                 </button>
               </div>
 
+              {/* Sepete Ekle Butonu */}
               <Button
                 type="submit"
-                disabled={adding}
-                className="h-10 flex-1 gap-2"
+                disabled={adding || buyingNow}
+                className="h-10 flex-1 min-w-[130px] gap-2 cursor-pointer"
               >
                 <ShoppingBag className="h-4 w-4" />
                 {adding ? "Ekleniyor..." : "Sepete Ekle"}
+              </Button>
+
+              {/* 1-Click Hemen Al (Express Checkout) Butonu */}
+              <Button
+                type="button"
+                disabled={adding || buyingNow}
+                onClick={handleBuyNow}
+                className="h-10 flex-1 min-w-[130px] gap-2 bg-[var(--accent)] hover:opacity-95 text-[var(--accent-fg,#ffffff)] font-bold shadow-xs cursor-pointer active:scale-98 transition-all"
+              >
+                <ArrowRight className="h-4 w-4" weight="bold" />
+                {buyingNow ? "Yönlendiriliyor..." : "Hemen Al"}
               </Button>
 
               <Button
@@ -418,7 +691,7 @@ export function ProductDetailClient({
                 variant="outline"
                 onClick={handleWishlistToggle}
                 aria-label="Favorilere Ekle"
-                className="h-10 px-3"
+                className="h-10 px-3 cursor-pointer"
               >
                 <Heart
                   className={`h-4 w-4 ${
@@ -530,41 +803,57 @@ export function ProductDetailClient({
         </div>
       </div>
 
-      {/* 70% Mobil Kullanıcı İçin Sabit Hızlı Sepete Ekle Çubuğu */}
+      {/* 70% Mobil Kullanıcı İçin Sabit Hızlı Sepete Ekle & Hemen Al Çubuğu */}
       {inStock && (
         <aside
-          aria-label="Mobil Hızlı Sepete Ekle"
-          className="md:hidden fixed bottom-14 inset-x-0 z-30 border-t border-[var(--border)] bg-[var(--surface)] px-3 py-2 shadow-lg flex items-center justify-between gap-3"
+          aria-label="Mobil Hızlı Satın Alma"
+          className="md:hidden fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] inset-x-0 z-30 border-t border-[var(--border)] bg-[var(--surface)] px-3 py-2 shadow-lg flex items-center justify-between gap-2"
         >
-          <div className="flex flex-col min-w-0">
-            <span className="text-[10px] text-[var(--muted)] truncate max-w-[140px]">
+          <div className="flex flex-col min-w-0 pr-1">
+            <span className="text-[10px] text-[var(--muted)] truncate max-w-[120px]">
               {selectedVariant ? selectedVariant.title : productTitle}
             </span>
-            <div className="flex items-baseline gap-1.5 font-mono">
+            <div className="flex items-baseline gap-1 font-mono">
               <span className="text-sm font-bold text-[var(--ink)]">
                 {formatMoney(selectedVariant?.effectivePrice ?? 0, "TRY")}
               </span>
-              {selectedVariant?.compareAtPrice &&
-                selectedVariant.effectivePrice &&
-                selectedVariant.compareAtPrice > selectedVariant.effectivePrice && (
-                  <span className="text-[10px] text-[var(--muted)] line-through">
-                    {formatMoney(selectedVariant.compareAtPrice, "TRY")}
-                  </span>
-                )}
             </div>
           </div>
 
-          <Button
-            type="button"
-            onClick={(e) => handleAddToCart(e as unknown as React.FormEvent)}
-            disabled={adding}
-            className="flex-1 max-w-[200px] h-10 gap-2 bg-[var(--accent)] text-[var(--accent-fg,#ffffff)] font-bold shadow-sm active:scale-95 transition-transform"
-          >
-            <ShoppingBag className="h-4 w-4" />
-            <span>{adding ? "Ekleniyor..." : "Sepete Ekle"}</span>
-          </Button>
+          <div className="flex items-center gap-1.5 flex-1 justify-end">
+            <Button
+              type="button"
+              onClick={(e) => handleAddToCart(e as unknown as React.FormEvent)}
+              disabled={adding || buyingNow}
+              variant="outline"
+              className="h-10 px-2.5 text-xs font-semibold cursor-pointer"
+            >
+              <ShoppingBag className="h-4 w-4" />
+              <span>{adding ? "..." : "Sepet"}</span>
+            </Button>
+
+            <Button
+              type="button"
+              onClick={handleBuyNow}
+              disabled={adding || buyingNow}
+              className="h-10 px-3.5 gap-1.5 bg-[var(--accent)] text-[var(--accent-fg,#ffffff)] font-bold shadow-sm active:scale-95 transition-transform text-xs cursor-pointer"
+            >
+              <span>{buyingNow ? "..." : "Hemen Al"}</span>
+              <ArrowRight className="h-3.5 w-3.5" weight="bold" />
+            </Button>
+          </div>
         </aside>
       )}
+
+      <SizeGuideModal
+        isOpen={fitFinderOpen}
+        onClose={() => setFitFinderOpen(false)}
+        onSelectSize={handleFitFinderSelect}
+        sizeGuideType={sizeGuideType}
+        sizeGuideData={sizeGuideData}
+        categoryName={categoryName}
+        productTitle={productTitle}
+      />
     </div>
   );
 }

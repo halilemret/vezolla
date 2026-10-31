@@ -45,19 +45,9 @@ export async function enqueueJob(options: EnqueueJobOptions): Promise<string> {
   return job.id;
 }
 
-export async function runJobById(jobId: string, workerName = "inline"): Promise<void> {
+async function executeClaimedJob(jobId: string): Promise<void> {
   const job = await db.job.findUnique({ where: { id: jobId } });
-  if (!job || job.status === "RUNNING" || job.status === "DONE") return;
-
-  await db.job.update({
-    where: { id: job.id },
-    data: {
-      status: "RUNNING",
-      lockedAt: new Date(),
-      lockedBy: workerName,
-      attempts: { increment: 1 },
-    },
-  });
+  if (!job) return;
 
   const handler = jobHandlers.get(job.type);
   if (!handler) {
@@ -89,7 +79,7 @@ export async function runJobById(jobId: string, workerName = "inline"): Promise<
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const shouldRetry = job.attempts + 1 < job.maxAttempts;
+    const shouldRetry = job.attempts < job.maxAttempts;
     await db.job.update({
       where: { id: job.id },
       data: {
@@ -102,19 +92,60 @@ export async function runJobById(jobId: string, workerName = "inline"): Promise<
   }
 }
 
-export async function runDueJobs(limit = 20, workerName = "worker"): Promise<number> {
-  const due = await db.job.findMany({
-    where: {
-      status: "QUEUED",
-      runAt: { lte: new Date() },
-    },
-    orderBy: { runAt: "asc" },
-    take: limit,
+export async function runJobById(jobId: string, workerName = "inline"): Promise<void> {
+  const now = new Date();
+  const claimed = await db.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Job"
+      WHERE "id" = ${jobId} AND "status" = 'QUEUED'::"JobStatus"
+      FOR UPDATE SKIP LOCKED
+    `;
+    if (rows.length === 0) return false;
+    await tx.job.update({
+      where: { id: jobId },
+      data: {
+        status: "RUNNING",
+        lockedAt: now,
+        lockedBy: workerName,
+        attempts: { increment: 1 },
+      },
+    });
+    return true;
   });
 
-  for (const job of due) {
-    await runJobById(job.id, workerName);
+  if (!claimed) return;
+  await executeClaimedJob(jobId);
+}
+
+export async function runDueJobs(limit = 20, workerName = "worker"): Promise<number> {
+  const now = new Date();
+  // Çoklu worker ortamında yarış koşullarını ve çift çalıştırmayı önlemek için
+  // PostgreSQL FOR UPDATE SKIP LOCKED ile işleri atomik seç ve kilitle
+  const claimedIds = await db.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Job"
+      WHERE "status" = 'QUEUED'::"JobStatus" AND "runAt" <= ${now}
+      ORDER BY "runAt" ASC
+      LIMIT ${limit}
+      FOR UPDATE SKIP LOCKED
+    `;
+    if (rows.length === 0) return [];
+    const ids = rows.map((r) => r.id);
+    await tx.job.updateMany({
+      where: { id: { in: ids } },
+      data: {
+        status: "RUNNING",
+        lockedAt: now,
+        lockedBy: workerName,
+        attempts: { increment: 1 },
+      },
+    });
+    return ids;
+  });
+
+  for (const id of claimedIds) {
+    await executeClaimedJob(id);
   }
 
-  return due.length;
+  return claimedIds.length;
 }

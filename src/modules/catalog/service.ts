@@ -651,324 +651,373 @@ export async function upsertProduct(
   const tagIds = await ensureTagsByNames(input.tagNames);
   const defaultWarehouse = await ensureDefaultWarehouse();
 
-  const product = await db.$transaction(async (tx) => {
-    const baseData = {
-      title: input.title,
-      slug,
-      subtitle: input.subtitle || null,
-      description: input.description || null,
-      status: input.status,
-      publishedAt: validPublishedAt,
-      brandId: input.brandId || null,
-      productTypeId: input.productTypeId || null,
-      taxClassId: input.taxClassId || null,
-      seoTitle: input.seoTitle || null,
-      seoDescription: input.seoDescription || null,
-      weightGrams: input.weightGrams ?? null,
-      deletedAt: null,
-    };
+  // Manuel koleksiyonları işlem dışından al (işlem süresini kısaltmak için)
+  const manualCollections = await db.collection.findMany({
+    where: { type: "MANUAL" },
+    select: { id: true },
+  });
+  const manualCollectionIdSet = new Set(manualCollections.map((c) => c.id));
+  const uniqueCollectionIds = Array.from(new Set(input.collectionIds)).filter(
+    (cid) => manualCollectionIdSet.has(cid)
+  );
 
-    const savedProduct = input.id
-      ? await tx.product.update({
-          where: { id: input.id },
-          data: baseData,
-        })
-      : await tx.product.create({
-          data: baseData,
-        });
+  const product = await db.$transaction(
+    async (tx) => {
+      const baseData = {
+        title: input.title,
+        slug,
+        subtitle: input.subtitle || null,
+        description: input.description || null,
+        status: input.status,
+        publishedAt: validPublishedAt,
+        brandId: input.brandId || null,
+        productTypeId: input.productTypeId || null,
+        taxClassId: input.taxClassId || null,
+        seoTitle: input.seoTitle || null,
+        seoDescription: input.seoDescription || null,
+        weightGrams: input.weightGrams ?? null,
+        clubPrice: input.clubPrice ?? (input.variants[0]?.clubPrice ?? null),
+        deletedAt: null,
+      };
 
-    // 1. Seçenekleri ve seçenek değerlerini senkronla
-    await tx.productOption.deleteMany({
-      where: { productId: savedProduct.id },
-    });
+      const savedProduct = input.id
+        ? await tx.product.update({
+            where: { id: input.id },
+            data: baseData,
+          })
+        : await tx.product.create({
+            data: baseData,
+          });
 
-    const optionValueIdByPair = new Map<string, string>();
-    const orderedOptionNames: string[] = [];
-
-    for (let optIdx = 0; optIdx < input.options.length; optIdx++) {
-      const opt = input.options[optIdx];
-      if (!opt) continue;
-      orderedOptionNames.push(opt.name);
-
-      const createdOption = await tx.productOption.create({
-        data: {
-          productId: savedProduct.id,
-          name: opt.name,
-          position: optIdx,
-        },
+      // 1. Seçenekleri ve seçenek değerlerini senkronla
+      await tx.productOption.deleteMany({
+        where: { productId: savedProduct.id },
       });
 
-      const seenValues = new Set<string>();
-      for (let valIdx = 0; valIdx < opt.values.length; valIdx++) {
-        const valObj = opt.values[valIdx];
-        if (!valObj) continue;
-        const valKey = valObj.value.trim().toLowerCase();
-        if (!valKey || seenValues.has(valKey)) continue;
-        seenValues.add(valKey);
+      const optionValueIdByPair = new Map<string, string>();
+      const orderedOptionNames: string[] = [];
 
-        const createdVal = await tx.productOptionValue.create({
+      for (let optIdx = 0; optIdx < input.options.length; optIdx++) {
+        const opt = input.options[optIdx];
+        if (!opt) continue;
+        orderedOptionNames.push(opt.name);
+
+        const createdOption = await tx.productOption.create({
           data: {
-            optionId: createdOption.id,
-            value: valObj.value.trim(),
-            swatch: valObj.swatch || null,
-            position: valIdx,
+            productId: savedProduct.id,
+            name: opt.name,
+            position: optIdx,
           },
         });
 
-        optionValueIdByPair.set(
-          `${opt.name.trim().toLowerCase()}:${valKey}`,
-          createdVal.id
-        );
+        const seenValues = new Set<string>();
+        const valuesToInsert: Array<{
+          value: string;
+          swatch: string | null;
+          position: number;
+        }> = [];
+
+        for (let valIdx = 0; valIdx < opt.values.length; valIdx++) {
+          const valObj = opt.values[valIdx];
+          if (!valObj) continue;
+          const valKey = valObj.value.trim().toLowerCase();
+          if (!valKey || seenValues.has(valKey)) continue;
+          seenValues.add(valKey);
+          valuesToInsert.push({
+            value: valObj.value.trim(),
+            swatch: valObj.swatch || null,
+            position: valIdx,
+          });
+        }
+
+        if (valuesToInsert.length > 0) {
+          const createdValues = await Promise.all(
+            valuesToInsert.map((v) =>
+              tx.productOptionValue.create({
+                data: {
+                  optionId: createdOption.id,
+                  value: v.value,
+                  swatch: v.swatch,
+                  position: v.position,
+                },
+                select: { id: true, value: true },
+              })
+            )
+          );
+
+          for (const createdVal of createdValues) {
+            optionValueIdByPair.set(
+              `${opt.name.trim().toLowerCase()}:${createdVal.value.trim().toLowerCase()}`,
+              createdVal.id
+            );
+          }
+        }
       }
-    }
 
-    // 2. Görselleri senkronla
-    await tx.productImage.deleteMany({
-      where: { productId: savedProduct.id },
-    });
+      // 2. Görselleri topluca senkronla
+      await tx.productImage.deleteMany({
+        where: { productId: savedProduct.id },
+      });
 
-    for (let imgIdx = 0; imgIdx < input.images.length; imgIdx++) {
-      const img = input.images[imgIdx];
-      if (!img || !img.url.trim()) continue;
-      await tx.productImage.create({
-        data: {
+      const validImages = input.images
+        .filter((img) => img && img.url.trim().length > 0)
+        .map((img, imgIdx) => ({
           productId: savedProduct.id,
           url: img.url.trim(),
           alt: img.alt || savedProduct.title,
           width: img.width ?? null,
           height: img.height ?? null,
           position: imgIdx,
-        },
+        }));
+
+      if (validImages.length > 0) {
+        await tx.productImage.createMany({
+          data: validImages,
+        });
+      }
+
+      // 3. Kategorileri topluca senkronla
+      await tx.productCategory.deleteMany({
+        where: { productId: savedProduct.id },
       });
-    }
 
-    // 3. Kategorileri senkronla
-    await tx.productCategory.deleteMany({
-      where: { productId: savedProduct.id },
-    });
+      const uniqueCategoryIds = Array.from(new Set(input.categoryIds));
+      const primaryCatId =
+        input.primaryCategoryId &&
+        uniqueCategoryIds.includes(input.primaryCategoryId)
+          ? input.primaryCategoryId
+          : uniqueCategoryIds[0] ?? null;
 
-    const uniqueCategoryIds = Array.from(new Set(input.categoryIds));
-    const primaryCatId =
-      input.primaryCategoryId && uniqueCategoryIds.includes(input.primaryCategoryId)
-        ? input.primaryCategoryId
-        : (uniqueCategoryIds[0] ?? null);
+      if (uniqueCategoryIds.length > 0) {
+        await tx.productCategory.createMany({
+          data: uniqueCategoryIds.map((categoryId, catIdx) => ({
+            productId: savedProduct.id,
+            categoryId,
+            position: catIdx,
+            isPrimary: categoryId === primaryCatId,
+          })),
+        });
+      }
 
-    for (let catIdx = 0; catIdx < uniqueCategoryIds.length; catIdx++) {
-      const categoryId = uniqueCategoryIds[catIdx];
-      if (!categoryId) continue;
-      await tx.productCategory.create({
-        data: {
+      // 4. Manuel koleksiyonları topluca senkronla
+      await tx.collectionProduct.deleteMany({
+        where: {
           productId: savedProduct.id,
-          categoryId,
-          position: catIdx,
-          isPrimary: categoryId === primaryCatId,
+          collection: { type: "MANUAL" },
         },
       });
-    }
 
-    // 4. Manuel koleksiyonları senkronla
-    const manualCollections = await tx.collection.findMany({
-      where: { type: "MANUAL" },
-      select: { id: true },
-    });
-    const manualCollectionIdSet = new Set(manualCollections.map((c) => c.id));
+      if (uniqueCollectionIds.length > 0) {
+        await tx.collectionProduct.createMany({
+          data: uniqueCollectionIds.map((collectionId, colIdx) => ({
+            collectionId,
+            productId: savedProduct.id,
+            position: colIdx,
+          })),
+        });
+      }
 
-    await tx.collectionProduct.deleteMany({
-      where: {
-        productId: savedProduct.id,
-        collection: { type: "MANUAL" },
-      },
-    });
-
-    const uniqueCollectionIds = Array.from(new Set(input.collectionIds)).filter(
-      (cid) => manualCollectionIdSet.has(cid)
-    );
-
-    for (let colIdx = 0; colIdx < uniqueCollectionIds.length; colIdx++) {
-      const collectionId = uniqueCollectionIds[colIdx];
-      if (!collectionId) continue;
-      await tx.collectionProduct.create({
-        data: {
-          collectionId,
-          productId: savedProduct.id,
-          position: colIdx,
-        },
+      // 5. Etiketleri topluca senkronla
+      await tx.productTag.deleteMany({
+        where: { productId: savedProduct.id },
       });
-    }
 
-    // 5. Etiketleri senkronla
-    await tx.productTag.deleteMany({
-      where: { productId: savedProduct.id },
-    });
+      if (tagIds.length > 0) {
+        await tx.productTag.createMany({
+          data: tagIds.map((tagId) => ({
+            productId: savedProduct.id,
+            tagId,
+          })),
+        });
+      }
 
-    for (const tagId of tagIds) {
-      await tx.productTag.create({
-        data: {
-          productId: savedProduct.id,
-          tagId,
-        },
+      // 6. Özel alan değerlerini topluca senkronla
+      await tx.productAttributeValue.deleteMany({
+        where: { productId: savedProduct.id },
       });
-    }
 
-    // 6. Özel alan değerlerini senkronla
-    await tx.productAttributeValue.deleteMany({
-      where: { productId: savedProduct.id },
-    });
-
-    for (const attr of input.attributes) {
-      const hasValue =
-        (attr.valueText !== null &&
-          attr.valueText !== undefined &&
-          attr.valueText.trim() !== "") ||
-        (attr.valueNumber !== null &&
-          attr.valueNumber !== undefined &&
-          Number.isFinite(attr.valueNumber)) ||
-        attr.valueBool !== null && attr.valueBool !== undefined ||
-        attr.valueList.length > 0;
-
-      if (!hasValue) continue;
-
-      await tx.productAttributeValue.create({
-        data: {
+      const validAttributes = input.attributes
+        .filter((attr) => {
+          return (
+            (attr.valueText !== null &&
+              attr.valueText !== undefined &&
+              attr.valueText.trim() !== "") ||
+            (attr.valueNumber !== null &&
+              attr.valueNumber !== undefined &&
+              Number.isFinite(attr.valueNumber)) ||
+            (attr.valueBool !== null && attr.valueBool !== undefined) ||
+            attr.valueList.length > 0
+          );
+        })
+        .map((attr) => ({
           productId: savedProduct.id,
           attributeId: attr.attributeId,
           valueText: attr.valueText ?? null,
           valueNumber: attr.valueNumber ?? null,
           valueBool: attr.valueBool ?? null,
           valueList: attr.valueList,
-        },
-      });
-    }
+        }));
 
-    // 7. Varyantları ID / SKU / Başlık eşleşmesiyle senkronla
-    const existingDbVariants = await tx.productVariant.findMany({
-      where: { productId: savedProduct.id },
-    });
+      if (validAttributes.length > 0) {
+        await tx.productAttributeValue.createMany({
+          data: validAttributes,
+        });
+      }
 
-    // Geçici SKU çakışmalarını önlemek için mevcut varyantların SKU'larını boşalt
-    if (existingDbVariants.length > 0) {
-      await tx.productVariant.updateMany({
+      // 7. Varyantları ID / SKU / Başlık eşleşmesiyle senkronla
+      const existingDbVariants = await tx.productVariant.findMany({
         where: { productId: savedProduct.id },
-        data: { sku: null },
-      });
-    }
-
-    const usedExistingIds = new Set<string>();
-    const keptVariantIds: string[] = [];
-
-    for (let varIdx = 0; varIdx < input.variants.length; varIdx++) {
-      const vInput = input.variants[varIdx];
-      if (!vInput) continue;
-
-      const cleanSku =
-        vInput.sku && vInput.sku.trim().length > 0 ? vInput.sku.trim() : null;
-      const cleanBarcode =
-        vInput.barcode && vInput.barcode.trim().length > 0
-          ? vInput.barcode.trim()
-          : null;
-      const cleanSupplierCode =
-        vInput.supplierCode && vInput.supplierCode.trim().length > 0
-          ? vInput.supplierCode.trim()
-          : null;
-
-      let matchedDbVariant = existingDbVariants.find(
-        (ev) => vInput.id && ev.id === vInput.id && !usedExistingIds.has(ev.id)
-      );
-
-      if (!matchedDbVariant && cleanSku) {
-        matchedDbVariant = existingDbVariants.find(
-          (ev) =>
-            ev.sku &&
-            ev.sku.toLowerCase() === cleanSku.toLowerCase() &&
-            !usedExistingIds.has(ev.id)
-        );
-      }
-
-      if (!matchedDbVariant) {
-        matchedDbVariant = existingDbVariants.find(
-          (ev) =>
-            ev.title.trim().toLowerCase() ===
-              vInput.title.trim().toLowerCase() && !usedExistingIds.has(ev.id)
-        );
-      }
-
-      const variantPayload = {
-        title: vInput.title.trim(),
-        sku: cleanSku,
-        barcode: cleanBarcode,
-        supplierCode: cleanSupplierCode,
-        price: vInput.price,
-        compareAtPrice: vInput.compareAtPrice ?? null,
-        costPrice: vInput.costPrice ?? null,
-        weightGrams: vInput.weightGrams ?? null,
-        position: varIdx,
-        isActive: vInput.isActive,
-        trackInventory: vInput.trackInventory,
-        allowBackorder: vInput.allowBackorder,
-      };
-
-      let savedVariantId: string;
-      if (matchedDbVariant) {
-        usedExistingIds.add(matchedDbVariant.id);
-        const updatedVar = await tx.productVariant.update({
-          where: { id: matchedDbVariant.id },
-          data: variantPayload,
-        });
-        savedVariantId = updatedVar.id;
-      } else {
-        const createdVar = await tx.productVariant.create({
-          data: {
-            productId: savedProduct.id,
-            ...variantPayload,
-          },
-        });
-        savedVariantId = createdVar.id;
-      }
-
-      keptVariantIds.push(savedVariantId);
-
-      // Varyant seçenek değerlerini bağla
-      await tx.variantOptionValue.deleteMany({
-        where: { variantId: savedVariantId },
       });
 
-      const selections: VariantOptionSelection[] =
-        vInput.optionValues && vInput.optionValues.length > 0
-          ? vInput.optionValues
-          : vInput.title.split(" / ").map((part, idx) => ({
-              optionName: orderedOptionNames[idx] ?? "",
-              value: part.trim(),
-            }));
+      // Geçici SKU çakışmalarını önlemek için mevcut varyantların SKU'larını boşalt
+      if (existingDbVariants.length > 0) {
+        await tx.productVariant.updateMany({
+          where: { productId: savedProduct.id },
+          data: { sku: null },
+        });
+      }
 
-      for (const sel of selections) {
-        if (!sel.optionName || !sel.value) continue;
-        const ovId = optionValueIdByPair.get(
-          `${sel.optionName.trim().toLowerCase()}:${sel.value.trim().toLowerCase()}`
+      const usedExistingIds = new Set<string>();
+      const keptVariantIds: string[] = [];
+      const seenVariantOptionPairs = new Set<string>();
+      const allVariantOptionValues: Array<{
+        variantId: string;
+        optionValueId: string;
+      }> = [];
+
+      for (let varIdx = 0; varIdx < input.variants.length; varIdx++) {
+        const vInput = input.variants[varIdx];
+        if (!vInput) continue;
+
+        const cleanSku =
+          vInput.sku && vInput.sku.trim().length > 0
+            ? vInput.sku.trim()
+            : null;
+        const cleanBarcode =
+          vInput.barcode && vInput.barcode.trim().length > 0
+            ? vInput.barcode.trim()
+            : null;
+        const cleanSupplierCode =
+          vInput.supplierCode && vInput.supplierCode.trim().length > 0
+            ? vInput.supplierCode.trim()
+            : null;
+
+        let matchedDbVariant = existingDbVariants.find(
+          (ev) =>
+            vInput.id && ev.id === vInput.id && !usedExistingIds.has(ev.id)
         );
-        if (ovId) {
-          await tx.variantOptionValue.create({
+
+        if (!matchedDbVariant && cleanSku) {
+          matchedDbVariant = existingDbVariants.find(
+            (ev) =>
+              ev.sku &&
+              ev.sku.toLowerCase() === cleanSku.toLowerCase() &&
+              !usedExistingIds.has(ev.id)
+          );
+        }
+
+        if (!matchedDbVariant) {
+          matchedDbVariant = existingDbVariants.find(
+            (ev) =>
+              ev.title.trim().toLowerCase() ===
+                vInput.title.trim().toLowerCase() &&
+              !usedExistingIds.has(ev.id)
+          );
+        }
+
+        const variantPayload = {
+          title: vInput.title.trim(),
+          sku: cleanSku,
+          barcode: cleanBarcode,
+          supplierCode: cleanSupplierCode,
+          price: vInput.price,
+          compareAtPrice: vInput.compareAtPrice ?? null,
+          clubPrice: vInput.clubPrice ?? null,
+          costPrice: vInput.costPrice ?? null,
+          weightGrams: vInput.weightGrams ?? null,
+          position: varIdx,
+          isActive: vInput.isActive,
+          trackInventory: vInput.trackInventory,
+          allowBackorder: vInput.allowBackorder,
+        };
+
+        let savedVariantId: string;
+        if (matchedDbVariant) {
+          usedExistingIds.add(matchedDbVariant.id);
+          const updatedVar = await tx.productVariant.update({
+            where: { id: matchedDbVariant.id },
+            data: variantPayload,
+          });
+          savedVariantId = updatedVar.id;
+        } else {
+          const createdVar = await tx.productVariant.create({
             data: {
-              variantId: savedVariantId,
-              optionValueId: ovId,
+              productId: savedProduct.id,
+              ...variantPayload,
             },
+          });
+          savedVariantId = createdVar.id;
+        }
+
+        keptVariantIds.push(savedVariantId);
+
+        const selections: VariantOptionSelection[] =
+          vInput.optionValues && vInput.optionValues.length > 0
+            ? vInput.optionValues
+            : vInput.title.split(" / ").map((part, idx) => ({
+                optionName: orderedOptionNames[idx] ?? "",
+                value: part.trim(),
+              }));
+
+        for (const sel of selections) {
+          if (!sel.optionName || !sel.value) continue;
+          const ovId = optionValueIdByPair.get(
+            `${sel.optionName.trim().toLowerCase()}:${sel.value.trim().toLowerCase()}`
+          );
+          if (ovId) {
+            const pairKey = `${savedVariantId}:${ovId}`;
+            if (!seenVariantOptionPairs.has(pairKey)) {
+              seenVariantOptionPairs.add(pairKey);
+              allVariantOptionValues.push({
+                variantId: savedVariantId,
+                optionValueId: ovId,
+              });
+            }
+          }
+        }
+      }
+
+      // Varyant seçenek değerlerini topluca senkronla
+      if (keptVariantIds.length > 0) {
+        await tx.variantOptionValue.deleteMany({
+          where: { variantId: { in: keptVariantIds } },
+        });
+
+        if (allVariantOptionValues.length > 0) {
+          await tx.variantOptionValue.createMany({
+            data: allVariantOptionValues,
           });
         }
       }
+
+      // Artık listede olmayan eski varyantları kaldır
+      const removedVariantIds = existingDbVariants
+        .filter((ev) => !keptVariantIds.includes(ev.id))
+        .map((ev) => ev.id);
+
+      if (removedVariantIds.length > 0) {
+        await tx.productVariant.deleteMany({
+          where: { id: { in: removedVariantIds } },
+        });
+      }
+
+      return savedProduct;
+    },
+    {
+      maxWait: 10000,
+      timeout: 30000,
     }
-
-    // Artık listede olmayan eski varyantları kaldır
-    const removedVariantIds = existingDbVariants
-      .filter((ev) => !keptVariantIds.includes(ev.id))
-      .map((ev) => ev.id);
-
-    if (removedVariantIds.length > 0) {
-      await tx.productVariant.deleteMany({
-        where: { id: { in: removedVariantIds } },
-      });
-    }
-
-    return savedProduct;
-  });
+  );
 
   // 8. Varyantların başlangıç / düzenleyici stok değerlerini varsayılan depoda senkronla
   const finalVariants = await db.productVariant.findMany({
@@ -1088,17 +1137,23 @@ export async function bulkUpdateProductPrices(
       ? 1 + input.percentage / 100
       : Math.max(0.01, 1 - input.percentage / 100);
 
-  await db.$transaction(async (tx) => {
-    for (const v of variants) {
-      const rawNewPrice = Math.round(v.price * multiplier);
-      const finalPrice = roundPriceMinor(rawNewPrice, input.rounding);
+  await db.$transaction(
+    async (tx) => {
+      for (const v of variants) {
+        const rawNewPrice = Math.round(v.price * multiplier);
+        const finalPrice = roundPriceMinor(rawNewPrice, input.rounding);
 
-      await tx.productVariant.update({
-        where: { id: v.id },
-        data: { price: finalPrice },
-      });
+        await tx.productVariant.update({
+          where: { id: v.id },
+          data: { price: finalPrice },
+        });
+      }
+    },
+    {
+      maxWait: 10000,
+      timeout: 30000,
     }
-  });
+  );
 
   const uniqueProductIds = Array.from(new Set(variants.map((v) => v.productId)));
   for (const pid of uniqueProductIds) {
@@ -1903,6 +1958,7 @@ export async function getProductEditorData(
           seoTitle: p.seoTitle ?? "",
           seoDescription: p.seoDescription ?? "",
           weightGrams: p.weightGrams ?? null,
+          clubPrice: p.clubPrice ?? null,
           categoryIds: p.categories.map((c) => c.categoryId),
           primaryCategoryId:
             p.categories.find((c) => c.isPrimary)?.categoryId ??
@@ -1934,6 +1990,7 @@ export async function getProductEditorData(
               supplierCode: v.supplierCode ?? null,
               price: v.price,
               compareAtPrice: v.compareAtPrice ?? null,
+              clubPrice: v.clubPrice ?? null,
               costPrice: v.costPrice ?? null,
               weightGrams: v.weightGrams ?? null,
               position: vIdx,

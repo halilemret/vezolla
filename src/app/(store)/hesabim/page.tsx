@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { getCurrentCustomer } from "@/lib/auth/session";
+import { getClubSettings } from "@/lib/settings/service";
 import {
   getCustomerWishlistDetails,
   getCustomerCollections,
@@ -28,6 +29,8 @@ export default async function CustomerAccountPage() {
     collections,
     activePromotions,
     recommendedProducts,
+    pendingLoyaltyTxs,
+    clubSettings,
   ] = await Promise.all([
     db.customer.findUnique({
       where: { id: customer.id },
@@ -59,6 +62,17 @@ export default async function CustomerAccountPage() {
             carrier: true,
             trackingNumber: true,
             trackingUrl: true,
+          },
+        },
+        returns: {
+          select: {
+            id: true,
+            status: true,
+            returnCode: true,
+            carrierCode: true,
+            refundAmount: true,
+            hygieneAccepted: true,
+            createdAt: true,
           },
         },
       },
@@ -105,6 +119,14 @@ export default async function CustomerAccountPage() {
         },
       },
     }),
+    db.loyaltyTransaction.findMany({
+      where: {
+        customerId: customer.id,
+        status: "PENDING",
+      },
+      select: { points: true },
+    }),
+    getClubSettings(),
   ]);
 
   if (!customerDb) {
@@ -129,9 +151,16 @@ export default async function CustomerAccountPage() {
     })),
   }));
 
+  const pendingLoyaltyPoints = pendingLoyaltyTxs.reduce(
+    (sum, t) => sum + t.points,
+    0
+  );
+
   return (
     <div className="mx-auto max-w-[1360px] py-4">
       <AccountDashboardClient
+        clubSettings={clubSettings}
+        pendingLoyaltyPoints={pendingLoyaltyPoints}
         customer={{
           id: customerDb.id,
           email: customerDb.email,
@@ -140,6 +169,7 @@ export default async function CustomerAccountPage() {
           phone: customerDb.phone,
           totalSpent: customerDb.totalSpent,
           orderCount: customerDb.orderCount,
+          loyaltyPoints: customerDb.loyaltyPoints,
           createdAt: customerDb.createdAt,
           acceptsMarketing: customerDb.acceptsMarketing,
         }}
@@ -155,6 +185,7 @@ export default async function CustomerAccountPage() {
           currency: o.currency,
           items: o.items,
           fulfillments: o.fulfillments,
+          returns: o.returns,
         }))}
         addresses={addresses.map((a) => ({
           id: a.id,

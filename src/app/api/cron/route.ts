@@ -5,12 +5,48 @@ import { runDueJobs } from "@/lib/jobs";
 import { runFeedImport } from "@/modules/xml/importer";
 import { rebuildProductAssociations } from "@/modules/personalization/recommendations";
 import { runAutomatedCartRecoverySweep } from "@/modules/analytics/abandoned-cart";
+import { maturePendingLoyaltyPoints } from "@/modules/loyalty/service";
 
-export async function POST() {
+function isCronAuthorized(request: Request): boolean {
+  const secret = process.env.CRON_SECRET?.trim();
+  if (!secret) {
+    return process.env.NODE_ENV !== "production";
+  }
+
+  const authHeader = request.headers.get("authorization");
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+    if (token && token === secret) {
+      return true;
+    }
+  }
+
+  const url = new URL(request.url);
+  const key = url.searchParams.get("key");
+  if (key && key.trim() === secret) {
+    return true;
+  }
+
+  return false;
+}
+
+export async function POST(request: Request) {
+  if (!isCronAuthorized(request)) {
+    return NextResponse.json(
+      { ok: false, error: "Yetkisiz erişim: Geçersiz veya eksik CRON yetkilendirme anahtarı." },
+      { status: 401 }
+    );
+  }
   return executeScheduledTasks();
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isCronAuthorized(request)) {
+    return NextResponse.json(
+      { ok: false, error: "Yetkisiz erişim: Geçersiz veya eksik CRON yetkilendirme anahtarı." },
+      { status: 401 }
+    );
+  }
   return executeScheduledTasks();
 }
 
@@ -54,7 +90,10 @@ async function executeScheduledTasks() {
     // 4. Otomatik terk edilmiş sepet hatırlatması (ayar aktifse)
     const cartRecovery = await runAutomatedCartRecoverySweep();
 
-    // 5. KVKK veri saklama politikası: 180 günü aşan anonim ziyaretçi olaylarını temizle
+    // 5. Teslimat sonrası 2 günlük süresi dolan bekleyen sadakat puanlarını olgunlaştır
+    const loyaltyMatured = await maturePendingLoyaltyPoints(now);
+
+    // 6. KVKK veri saklama politikası: 180 günü aşan anonim ziyaretçi olaylarını temizle
     const retentionCutoff = new Date(now.getTime() - 180 * 86_400_000);
     const purgedEvents = await db.visitorEvent.deleteMany({
       where: {
@@ -70,6 +109,7 @@ async function executeScheduledTasks() {
       syncedFeeds,
       associations,
       cartRecovery,
+      loyaltyMatured,
       purgedVisitorEvents: purgedEvents.count,
     });
   } catch (err) {

@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { emitDomainEvent } from "@/lib/events";
+import { CART_COOKIE } from "@/lib/auth/session";
+import { sendTransactionalEmail } from "@/lib/mail";
+import { formatMoney } from "@/lib/money";
 import { getPaymentSettings } from "@/lib/settings/service";
+import { cancelOrder } from "@/modules/orders/service";
 import { verifyIyzicoCheckoutToken } from "@/modules/payments/iyzico";
+import { earnLoyaltyPoints } from "@/modules/loyalty/service";
 import "@/modules/invoicing/auto-invoicing";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -36,6 +41,16 @@ async function handleIyzicoCallback(token: string, orderIdHint: string | null, b
     );
   }
 
+  // Idempotency: Sipariş daha önce zaten onaylanıp ödendiyse mükerrer işlem/e-posta gönderme
+  if (payment.order.paymentStatus === "PAID") {
+    const response = NextResponse.redirect(
+      new URL(`/siparis-sonuc/${payment.orderId}`, baseUrl),
+      { status: 303 }
+    );
+    response.cookies.delete(CART_COOKIE);
+    return response;
+  }
+
   if (verification.ok) {
     const now = new Date();
     await db.$transaction([
@@ -64,6 +79,12 @@ async function handleIyzicoCallback(token: string, orderIdHint: string | null, b
           isInternal: false,
         },
       }),
+      db.cart.updateMany({
+        where: { orderId: payment.orderId },
+        data: {
+          completedAt: now,
+        },
+      }),
     ]);
 
     await emitDomainEvent("order.paid", {
@@ -72,36 +93,68 @@ async function handleIyzicoCallback(token: string, orderIdHint: string | null, b
       amount: payment.amount,
     });
 
-    return NextResponse.redirect(
+    // Sipariş ödendiğinde müşteriye Vezolla Club sadakat puanı kazandır
+    if (payment.order.customerId) {
+      const earnedPoints = Math.floor(payment.order.total / 100);
+      if (earnedPoints > 0) {
+        earnLoyaltyPoints({
+          customerId: payment.order.customerId,
+          points: earnedPoints,
+          reason: "ORDER_PURCHASE",
+          orderId: payment.order.id,
+        }).catch(() => {});
+      }
+    }
+
+    // Kart ödemesi başarıyla PAID durumuna geçtiğinde sipariş onay e-postasını gönder
+    const ship = (payment.order.shippingAddress ?? {}) as Record<string, unknown>;
+    const recipientName =
+      `${String(ship.firstName ?? "")} ${String(ship.lastName ?? "")}`.trim() || "Değerli Müşterimiz";
+
+    await sendTransactionalEmail({
+      to: payment.order.email,
+      templateKey: "order_placed",
+      variables: {
+        customerName: recipientName,
+        orderNumber: String(payment.order.number),
+        orderTotal: formatMoney(payment.order.total, payment.order.currency),
+        paymentMethod: "Kredi / Banka Kartı (iyzico)",
+        orderUrl: `${baseUrl}/siparis-sonuc/${payment.orderId}`,
+      },
+    }).catch(() => {});
+
+    const response = NextResponse.redirect(
       new URL(`/siparis-sonuc/${payment.orderId}`, baseUrl),
       { status: 303 }
     );
+    response.cookies.delete(CART_COOKIE);
+    return response;
   }
 
-  await db.$transaction([
-    db.payment.update({
-      where: { id: payment.id },
-      data: {
-        status: "FAILED",
-        errorMessage: verification.errorMessage ?? "Kart ödemesi başarısız oldu.",
-        providerData: (verification.raw ?? {}) as Prisma.InputJsonValue,
-      },
-    }),
-    db.order.update({
-      where: { id: payment.orderId },
-      data: {
-        paymentStatus: "FAILED",
-      },
-    }),
-    db.orderEvent.create({
-      data: {
-        orderId: payment.orderId,
-        type: "payment",
-        message: `Kart ödemesi başarısız: ${verification.errorMessage ?? "Banka reddi"}`,
-        isInternal: false,
-      },
-    }),
-  ]);
+  // Ödeme başarısız veya 3DS iptal:
+  // 1. Ödeme kaydını güncelle
+  await db.payment.update({
+    where: { id: payment.id },
+    data: {
+      status: "FAILED",
+      errorMessage: verification.errorMessage ?? "Kart ödemesi başarısız oldu.",
+      providerData: (verification.raw ?? {}) as Prisma.InputJsonValue,
+    },
+  });
+
+  // 2. Rezerve edilmiş stokları serbest bırak ve siparişi iptal et (zombi rezervasyon oluşmasını engelle)
+  await cancelOrder({
+    orderId: payment.orderId,
+    reason: `iyzico ödeme başarısız: ${verification.errorMessage ?? "Banka reddi"}`,
+  });
+
+  // 3. Müşterinin sepetini koru (completedAt null kalsın)
+  await db.cart.updateMany({
+    where: { orderId: payment.orderId },
+    data: {
+      completedAt: null,
+    },
+  });
 
   const errParam = encodeURIComponent(
     verification.errorMessage ?? "Kart ödemesi onaylanmadı."

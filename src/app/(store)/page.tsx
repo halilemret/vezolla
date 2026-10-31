@@ -19,6 +19,7 @@ import { ProductCard } from "@/components/store/product-card";
 import { TrustBadges } from "@/components/store/trust-badges";
 import { FlashDealsBanner } from "@/components/store/flash-deals-banner";
 import { HomeProductShowcase } from "@/components/store/home-product-showcase";
+import { InterestProductCarousel, type CarouselProduct } from "@/components/store/interest-product-carousel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -106,8 +107,89 @@ export default async function StoreHomePage({
         })
       : [];
 
+  // İlginizi Çekebilir: Kişiselleştirilmiş 5'li Kayan Karusel
+  let visitedProductIds: string[] = [];
+  if (visitorId) {
+    try {
+      const recentViews = await db.visitorEvent.findMany({
+        where: {
+          visitorId,
+          type: { in: ["view_product", "product_view"] },
+          productId: { not: null },
+        },
+        take: 6,
+        orderBy: { createdAt: "desc" },
+        select: { productId: true },
+      });
+      visitedProductIds = recentViews
+        .map((v) => v.productId!)
+        .filter((id, idx, arr) => arr.indexOf(id) === idx);
+    } catch {
+      // sessizce geç
+    }
+  }
+
+  const isReturningVisitor = visitedProductIds.length > 0;
+
+  const carouselDbProducts = await db.product.findMany({
+    where: {
+      status: "ACTIVE",
+      deletedAt: null,
+      totalStock: { gt: 0 },
+      ...(isReturningVisitor
+        ? {
+            OR: [
+              { id: { in: visitedProductIds } },
+              {
+                categories: {
+                  some: {
+                    category: {
+                      products: {
+                        some: { productId: { in: visitedProductIds } },
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
+    },
+    take: 10,
+    orderBy: [{ totalStock: "desc" }, { createdAt: "desc" }],
+    include: {
+      brand: { select: { name: true } },
+      images: { orderBy: { position: "asc" }, take: 1, select: { url: true } },
+      variants: {
+        where: { isActive: true },
+        take: 1,
+        select: { compareAtPrice: true, clubPrice: true },
+      },
+    },
+  });
+
+  const carouselProducts: CarouselProduct[] = carouselDbProducts.map((p) => ({
+    id: p.id,
+    slug: p.slug,
+    title: p.title,
+    subtitle: p.subtitle,
+    minPrice: p.minPrice ?? 0,
+    compareAtPrice: p.variants[0]?.compareAtPrice ?? null,
+    clubPrice: p.variants[0]?.clubPrice ?? p.clubPrice ?? null,
+    imageUrl: p.images[0]?.url ?? null,
+    brandName: p.brand?.name ?? null,
+  }));
+
   return (
     <div className="space-y-12">
+      {/* İlginizi Çekebilir: 5'li Kayan Blok (Masaüstü 5, Mobil Kaydırmalı, Kişiselleştirilmiş) */}
+      {carouselProducts.length > 0 && (
+        <InterestProductCarousel
+          products={carouselProducts}
+          isReturningVisitor={isReturningVisitor}
+        />
+      )}
+
       {/* Reklam kimliğinden gelen ziyaretçiye özel kampanya bandı */}
       {resolvedAd.primaryMapping && adFeaturedProducts.length > 0 ? (
         <section className="rounded-md border border-[#fed7aa] bg-[#fff7ed] p-6 space-y-4">

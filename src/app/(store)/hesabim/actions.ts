@@ -78,9 +78,21 @@ export async function removeWishlistItemStoreFormAction(
 
 export async function submitReturnStoreFormAction(
   formData: FormData
-): Promise<void> {
-  await createReturnRequestAction(formData);
+): Promise<{ ok: boolean; message: string; error?: string }> {
+  const res = await createReturnRequestAction(formData);
   revalidatePath("/hesabim");
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: res.error,
+      message: res.error || "İade talebi oluşturulamadı.",
+    };
+  }
+  return {
+    ok: true,
+    message:
+      "İade talebiniz başarıyla alındı. Müşteri temsilcimiz inceleyip sizinle iletişime geçecektir.",
+  };
 }
 
 export async function anonymizeMyAccountStoreFormAction(

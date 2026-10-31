@@ -6,6 +6,7 @@ import {
   restoreCartFromRecoveryToken,
 } from "@/modules/checkout/cart";
 import { getRecommendedProducts } from "@/modules/personalization/recommendations";
+import { getClubSettings } from "@/lib/settings/service";
 import { ProductCard } from "@/components/store/product-card";
 import { CartClient } from "./cart-client";
 
@@ -38,7 +39,7 @@ export default async function CartPage({ searchParams }: CartPageProps) {
     }
   }
 
-  const [summary, availablePromotions, freeShippingThresholdMethod] =
+  const [summary, availablePromotions, freeShippingThresholdMethod, clubSettings] =
     await Promise.all([
       computeCartSummary(),
       db.promotion.findMany({
@@ -56,6 +57,7 @@ export default async function CartPage({ searchParams }: CartPageProps) {
         orderBy: { freeOverAmount: "asc" },
         select: { freeOverAmount: true },
       }),
+      getClubSettings(),
     ]);
 
   const cartProductIds = summary.lines.map((l) => l.productId);
@@ -122,8 +124,9 @@ export default async function CartPage({ searchParams }: CartPageProps) {
 
       <CartClient
         initialSummary={summary}
-        freeShippingThresholdMinor={freeShippingThresholdMethod?.freeOverAmount ?? 50000}
+        freeShippingThresholdMinor={freeShippingThresholdMethod?.freeOverAmount ?? 150000}
         availablePromotions={promoList}
+        clubSettings={clubSettings}
       />
 
       {filteredRecs.length > 0 && (
@@ -152,6 +155,8 @@ export default async function CartPage({ searchParams }: CartPageProps) {
                   brandName: rel.brand?.name ?? null,
                   imageUrl: rel.images[0]?.url ?? null,
                   compareAtPrice: rel.variants[0]?.compareAtPrice ?? null,
+                  clubPrice: rel.variants[0]?.clubPrice ?? null,
+                  variants: rel.variants,
                 }}
               />
             ))}

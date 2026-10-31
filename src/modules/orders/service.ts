@@ -4,6 +4,7 @@ import { recordAudit } from "@/lib/audit";
 import { emitDomainEvent } from "@/lib/events";
 import { sendExpoPushNotification } from "@/lib/notifications";
 import { sendTransactionalEmail } from "@/lib/mail";
+import { sendReturnCodeSms, sendShippingUpdateSms } from "@/lib/sms";
 import { extractIncludedVat, formatMoney } from "@/lib/money";
 import { getPaymentSettings, getStoreSettings } from "@/lib/settings/service";
 import type { Prisma } from "@/generated/prisma/client";
@@ -25,6 +26,10 @@ import {
   type WarehouseStockCandidate,
 } from "@/modules/checkout/service";
 import type { CheckoutAddress } from "@/modules/checkout/schemas";
+import {
+  schedulePendingLoyaltyPointsForOrder,
+  cancelPendingLoyaltyPointsForOrder,
+} from "@/modules/loyalty/service";
 
 export interface OrderFilterParams {
   q?: string;
@@ -461,6 +466,16 @@ export async function createFulfillment(
     },
   }).catch(() => {});
 
+  if (order.phone) {
+    sendShippingUpdateSms({
+      phone: order.phone,
+      number: order.number,
+      carrier: getCarrierLabel(input.carrier),
+      trackingNumber,
+      trackingUrl: result.fulfillment.trackingUrl,
+    }).catch(() => {});
+  }
+
   await emitDomainEvent("order.shipped", {
     orderId: order.id,
     orderNumber: order.number,
@@ -511,6 +526,9 @@ export async function markFulfillmentDelivered(params: {
       },
     }),
   ]);
+
+  // Teslimden 2 gün sonra aktifleşmek üzere bekleyen VezollaClub puanlarını zamanla
+  await schedulePendingLoyaltyPointsForOrder(fulfillment.orderId, now).catch(() => {});
 
   return { ok: true };
 }
@@ -605,6 +623,9 @@ export async function cancelOrder(params: {
         isInternal: false,
       },
     });
+  }, {
+    maxWait: 15000,
+    timeout: 30000,
   });
 
   await recordAudit({
@@ -614,6 +635,9 @@ export async function cancelOrder(params: {
     entityId: order.id,
     summary: `Sipariş #${order.number} iptal edildi (${reasonText})`,
   });
+
+  // İptal edilen siparişin bekleyen sadakat puanlarını iptal et
+  await cancelPendingLoyaltyPointsForOrder(order.id).catch(() => {});
 
   await emitDomainEvent("order.cancelled", {
     orderId: order.id,
@@ -978,11 +1002,19 @@ export async function createManualOrder(
   }
 }
 
+export function generateReturnShippingCode(): string {
+  const p1 = Math.floor(100 + Math.random() * 900);
+  const p2 = Math.floor(100 + Math.random() * 900);
+  return `VEZ-${p1}-${p2}`;
+}
+
 export interface CreateReturnRequestInput {
   orderId: string;
   reason?: string | null;
   customerNote?: string | null;
   restock?: boolean;
+  hygieneAccepted?: boolean;
+  carrierCode?: string | null;
   items: Array<{
     orderItemId: string;
     quantity: number;
@@ -992,7 +1024,7 @@ export interface CreateReturnRequestInput {
 
 export async function createReturnRequest(
   input: CreateReturnRequestInput
-): Promise<{ ok: boolean; error?: string; returnRequestId?: string }> {
+): Promise<{ ok: boolean; error?: string; returnRequestId?: string; returnCode?: string }> {
   const order = await db.order.findUnique({
     where: { id: input.orderId },
     include: { items: true },
@@ -1000,6 +1032,15 @@ export async function createReturnRequest(
 
   if (!order) {
     return { ok: false, error: "Sipariş bulunamadı." };
+  }
+
+  // Mesafeli Sözleşmeler Yönetmeliği m. 15/ç Hijyen Onayı
+  if (!input.hygieneAccepted) {
+    return {
+      ok: false,
+      error:
+        "Mesafeli Sözleşmeler Yönetmeliği m. 15/ç uyarınca koruyucu hijyen bandı açılmış ürünlerde cayma hakkı bulunmadığına dair yasal onayı vermelisiniz.",
+    };
   }
 
   const validItems: Array<{
@@ -1037,6 +1078,7 @@ export async function createReturnRequest(
   }
 
   const totalRefundAmount = validItems.reduce((sum, i) => sum + i.refundableMinor, 0);
+  const carrierCode = input.carrierCode?.trim() || "YURTICI";
 
   const created = await db.$transaction(async (tx) => {
     const ret = await tx.returnRequest.create({
@@ -1047,6 +1089,9 @@ export async function createReturnRequest(
         customerNote: input.customerNote?.trim() || null,
         refundAmount: totalRefundAmount,
         restock: input.restock ?? true,
+        returnCode: null,
+        carrierCode,
+        hygieneAccepted: true,
         items: {
           create: validItems.map((vi) => ({
             orderItemId: vi.orderItemId,
@@ -1061,7 +1106,7 @@ export async function createReturnRequest(
       data: {
         orderId: order.id,
         type: "return",
-        message: `İade talebi (RMA) oluşturuldu. Tahmini iade tutarı: ${formatMoney(totalRefundAmount, order.currency)}.`,
+        message: `İade talebi (RMA) oluşturuldu (İnceleme Bekleniyor). Tahmini iade tutarı: ${formatMoney(totalRefundAmount, order.currency)}.`,
         isInternal: false,
       },
     });
@@ -1070,7 +1115,7 @@ export async function createReturnRequest(
       data: {
         type: "return.requested",
         title: `Yeni İade Talebi (#${order.number})`,
-        body: `Sipariş #${order.number} için ${formatMoney(totalRefundAmount, order.currency)} tutarında RMA talebi açıldı.`,
+        body: `Sipariş #${order.number} için ${formatMoney(totalRefundAmount, order.currency)} tutarında RMA talebi açıldı. İnceleme ve temsilci onayı bekleniyor.`,
         link: `/admin/iadeler`,
       },
     });
@@ -1080,7 +1125,7 @@ export async function createReturnRequest(
 
   sendExpoPushNotification({
     title: `Yeni İade Talebi (#${order.number})`,
-    body: `Sipariş #${order.number} için ${formatMoney(totalRefundAmount, order.currency)} tutarında RMA talebi açıldı.`,
+    body: `Sipariş #${order.number} için ${formatMoney(totalRefundAmount, order.currency)} tutarında RMA talebi açıldı. İnceleme bekleniyor.`,
     data: {
       type: "return.requested",
       orderId: order.id,
@@ -1107,24 +1152,39 @@ export async function updateReturnRequestStatus(params: {
     return { ok: false, error: "İade talebi bulunamadı." };
   }
 
+  let finalReturnCode = ret.returnCode;
+  if (params.status === "APPROVED" && !finalReturnCode) {
+    finalReturnCode = generateReturnShippingCode();
+  }
+
   await db.$transaction([
     db.returnRequest.update({
       where: { id: ret.id },
       data: {
         status: params.status,
         staffNote: params.staffNote?.trim() ?? ret.staffNote,
+        ...(finalReturnCode ? { returnCode: finalReturnCode } : {}),
       },
     }),
     db.orderEvent.create({
       data: {
         orderId: ret.orderId,
         type: "return",
-        message: `İade talebi durumu "${params.status}" olarak güncellendi.${params.staffNote ? ` Not: ${params.staffNote}` : ""}`,
+        message: `İade talebi durumu "${params.status}" olarak güncellendi.${finalReturnCode ? ` Kargo İade Kodu: ${finalReturnCode}.` : ""}${params.staffNote ? ` Not: ${params.staffNote}` : ""}`,
         staffUserId: params.staffUserId ?? null,
         isInternal: false,
       },
     }),
   ]);
+
+  if (params.status === "APPROVED" && ret.order.phone && finalReturnCode) {
+    sendReturnCodeSms({
+      phone: ret.order.phone,
+      number: ret.order.number,
+      returnCode: finalReturnCode,
+      carrierCode: ret.carrierCode,
+    }).catch(() => {});
+  }
 
   await recordAudit({
     staffUserId: params.staffUserId ?? null,

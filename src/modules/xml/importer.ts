@@ -83,21 +83,72 @@ export interface RunFeedImportResult {
   errors: FeedRunErrorItem[];
 }
 
-function normalizeXmlItem(
+function getVariantFieldValue(
+  vNode: Record<string, unknown>,
+  path: string,
+  variantsPath?: string
+): string {
+  if (!path) return "";
+  let val = getStringByPath(vNode, path);
+  if (val) return val;
+
+  if (variantsPath && path.toLowerCase().startsWith(variantsPath.toLowerCase() + ".")) {
+    const relativePath = path.slice(variantsPath.length + 1);
+    val = getStringByPath(vNode, relativePath);
+    if (val) return val;
+  }
+
+  const lastPart = path.split(".").pop();
+  if (lastPart && lastPart !== path) {
+    val = getStringByPath(vNode, lastPart);
+    if (val) return val;
+  }
+
+  return "";
+}
+
+export function normalizeXmlItem(
   rawItem: Record<string, unknown>,
   mapping: FeedMapping,
   transform: FeedTransform,
   matchKey: "SKU" | "BARCODE" | "SUPPLIER_CODE"
 ): NormalizedProductInput {
-  const rawExternalId = getStringByPath(rawItem, mapping.externalIdPath);
-  const rawSku = getStringByPath(rawItem, mapping.skuPath);
-  const rawBarcode = getStringByPath(rawItem, mapping.barcodePath);
+  const rawExternalId =
+    getStringByPath(rawItem, mapping.externalIdPath) ||
+    getStringByPath(rawItem, "product_code") ||
+    getStringByPath(rawItem, "product_id") ||
+    getStringByPath(rawItem, "UrunKodu") ||
+    getStringByPath(rawItem, "id") ||
+    getStringByPath(rawItem, "code");
+
+  const rawSku =
+    getStringByPath(rawItem, mapping.skuPath) ||
+    getStringByPath(rawItem, "product_code") ||
+    getStringByPath(rawItem, "product_model") ||
+    getStringByPath(rawItem, "StokKodu") ||
+    getStringByPath(rawItem, "sku");
+
+  const rawBarcode =
+    getStringByPath(rawItem, mapping.barcodePath) ||
+    getStringByPath(rawItem, "Barkod") ||
+    getStringByPath(rawItem, "Barcode") ||
+    getStringByPath(rawItem, "barcode") ||
+    getStringByPath(rawItem, "ean");
 
   const externalId = rawExternalId || rawSku || rawBarcode;
   const sku = rawSku || externalId;
   const barcode = rawBarcode || null;
 
-  const rawTitle = getStringByPath(rawItem, mapping.titlePath);
+  const rawTitle =
+    getStringByPath(rawItem, mapping.titlePath) ||
+    getStringByPath(rawItem, "product_name") ||
+    getStringByPath(rawItem, "product_title") ||
+    getStringByPath(rawItem, "Baslik") ||
+    getStringByPath(rawItem, "UrunAdi") ||
+    getStringByPath(rawItem, "Title") ||
+    getStringByPath(rawItem, "Name") ||
+    getStringByPath(rawItem, "title") ||
+    getStringByPath(rawItem, "name");
   const title = transformProductTitle(rawTitle, transform);
 
   const rawSubtitle = mapping.subtitlePath
@@ -107,22 +158,50 @@ function normalizeXmlItem(
     ? transformText(rawSubtitle, transform, { isTitle: false })
     : null;
 
-  const rawDescription = getStringByPath(rawItem, mapping.descriptionPath);
+  const rawDescription =
+    (mapping.descriptionPath ? getStringByPath(rawItem, mapping.descriptionPath) : "") ||
+    getStringByPath(rawItem, "product_description") ||
+    getStringByPath(rawItem, "Aciklama") ||
+    getStringByPath(rawItem, "Description") ||
+    getStringByPath(rawItem, "description") ||
+    getStringByPath(rawItem, "Detay");
   const description = rawDescription
     ? transformDescriptionText(rawDescription, transform)
     : null;
 
-  const brandName = getStringByPath(rawItem, mapping.brandPath) || null;
-  const sourceCategory = getStringByPath(rawItem, mapping.categoryPath) || null;
-  const rawVat = getStringByPath(rawItem, mapping.taxRatePath) || null;
+  const brandName =
+    (mapping.brandPath ? getStringByPath(rawItem, mapping.brandPath) : "") ||
+    getStringByPath(rawItem, "brand") ||
+    getStringByPath(rawItem, "Marka") ||
+    getStringByPath(rawItem, "Brand") ||
+    null;
 
-  const rawPrice = getStringByPath(rawItem, mapping.pricePath);
+  const sourceCategory =
+    (mapping.categoryPath ? getStringByPath(rawItem, mapping.categoryPath) : "") ||
+    getStringByPath(rawItem, "category") ||
+    getStringByPath(rawItem, "Kategori") ||
+    getStringByPath(rawItem, "Category") ||
+    null;
+
+  const rawVat =
+    (mapping.taxRatePath ? getStringByPath(rawItem, mapping.taxRatePath) : "") ||
+    getStringByPath(rawItem, "vat") ||
+    getStringByPath(rawItem, "KdvOrani") ||
+    null;
+
+  const rawPrice =
+    (mapping.pricePath ? getStringByPath(rawItem, mapping.pricePath) : "") ||
+    getStringByPath(rawItem, "sale_price") ||
+    getStringByPath(rawItem, "price") ||
+    getStringByPath(rawItem, "SatisFiyati") ||
+    getStringByPath(rawItem, "Fiyat");
   const sourcePriceMinor = parseMoneyInput(rawPrice);
   const finalPriceMinor = parseAndTransformPrice(rawPrice, transform, rawVat);
 
   const rawCompareAt = mapping.compareAtPricePath
     ? getStringByPath(rawItem, mapping.compareAtPricePath)
-    : "";
+    : (getStringByPath(rawItem, "sale_price") ? getStringByPath(rawItem, "price") : "") ||
+      getStringByPath(rawItem, "PiyasaFiyati");
   const compareAtTransformed = rawCompareAt
     ? parseAndTransformPrice(rawCompareAt, transform, rawVat)
     : 0;
@@ -131,14 +210,17 @@ function normalizeXmlItem(
 
   const rawCost = mapping.costPricePath
     ? getStringByPath(rawItem, mapping.costPricePath)
-    : "";
+    : getStringByPath(rawItem, "buy_price") || getStringByPath(rawItem, "AlisFiyati");
   const costParsed = rawCost ? parseMoneyInput(rawCost) : 0;
   const costPriceMinor =
     costParsed > 0
       ? Math.round(costParsed * transform.currencyMultiplier)
       : null;
 
-  const rawStock = getStringByPath(rawItem, mapping.stockPath);
+  const rawStock =
+    (mapping.stockPath ? getStringByPath(rawItem, mapping.stockPath) : "") ||
+    getStringByPath(rawItem, "stock") ||
+    getStringByPath(rawItem, "Stok");
   const parsedSourceStock = Math.floor(
     Number(String(rawStock || "0").replace(",", ".").trim())
   );
@@ -157,36 +239,162 @@ function normalizeXmlItem(
   const weightGrams =
     Number.isFinite(parsedWeight) && parsedWeight > 0 ? parsedWeight : null;
 
-  const images = getStringListByPath(rawItem, mapping.imagesPath);
+  const images = (() => {
+    const list = getStringListByPath(rawItem, mapping.imagesPath);
+    if (list.length > 0) return list;
+    const fromImages = getStringListByPath(rawItem, "images.image");
+    if (fromImages.length > 0) return fromImages;
+    const fromResimler = getStringListByPath(rawItem, "Resimler.Resim");
+    if (fromResimler.length > 0) return fromResimler;
+    return getStringListByPath(rawItem, "Gorseller.Gorsel");
+  })();
 
-  const rawVariantNodes = getObjectListByPath(rawItem, mapping.variantsPath);
+  let rawVariantNodes = getObjectListByPath(rawItem, mapping.variantsPath);
+  if (rawVariantNodes.length === 0) {
+    const fallbackVariantPaths = [
+      "varriants.variant",
+      "variants.variant",
+      "Varyantlar.Varyant",
+      "Secenekler.Secenek",
+      "Variants.Variant",
+      "urun_secenek.secenek",
+      "subproducts.subproduct",
+      "options.option",
+      "varriants",
+      "variants",
+    ];
+    for (const fbPath of fallbackVariantPaths) {
+      const candNodes = getObjectListByPath(rawItem, fbPath);
+      if (candNodes.length > 0) {
+        rawVariantNodes = candNodes;
+        break;
+      }
+    }
+  }
+
   const variants: NormalizedVariantInput[] = [];
+  let discoveredOption1Name = mapping.variantOption1Name || "";
+  let discoveredOption2Name = mapping.variantOption2Name || "";
 
   if (rawVariantNodes.length > 0) {
     for (let idx = 0; idx < rawVariantNodes.length; idx++) {
       const vNode = rawVariantNodes[idx];
       if (!vNode) continue;
       const vSku =
-        getStringByPath(vNode, mapping.variantSkuPath) ||
+        getVariantFieldValue(vNode, mapping.variantSkuPath, mapping.variantsPath) ||
+        getVariantFieldValue(vNode, "@_Sku") ||
+        getVariantFieldValue(vNode, "Sku") ||
+        getVariantFieldValue(vNode, "sku") ||
+        getVariantFieldValue(vNode, "StokKodu") ||
+        getVariantFieldValue(vNode, "stok_kodu") ||
+        getVariantFieldValue(vNode, "Barkod") ||
+        getVariantFieldValue(vNode, "Barcode") ||
         `${sku}-${idx + 1}`;
       const vBarcode =
-        getStringByPath(vNode, mapping.variantBarcodePath) || null;
-      const opt1 = getStringByPath(vNode, mapping.variantOption1Path);
-      const opt2 = getStringByPath(vNode, mapping.variantOption2Path);
-      const explicitVTitle = getStringByPath(vNode, mapping.variantTitlePath);
+        getVariantFieldValue(vNode, mapping.variantBarcodePath, mapping.variantsPath) ||
+        getVariantFieldValue(vNode, "@_Barkod") ||
+        getVariantFieldValue(vNode, "Barkod") ||
+        getVariantFieldValue(vNode, "@_Barcode") ||
+        getVariantFieldValue(vNode, "Barcode") ||
+        getVariantFieldValue(vNode, "barcode") ||
+        getVariantFieldValue(vNode, "Ean") ||
+        null;
+      let opt1 =
+        getVariantFieldValue(vNode, mapping.variantOption1Path, mapping.variantsPath) ||
+        getVariantFieldValue(vNode, "@_Renk") ||
+        getVariantFieldValue(vNode, "Renk") ||
+        getVariantFieldValue(vNode, "@_Color") ||
+        getVariantFieldValue(vNode, "Color") ||
+        "";
+      let opt2 =
+        getVariantFieldValue(vNode, mapping.variantOption2Path, mapping.variantsPath) ||
+        getVariantFieldValue(vNode, "@_Beden") ||
+        getVariantFieldValue(vNode, "Beden") ||
+        getVariantFieldValue(vNode, "@_Size") ||
+        getVariantFieldValue(vNode, "Size") ||
+        "";
+
+      if (opt1 && !discoveredOption1Name) discoveredOption1Name = "Renk";
+      if (opt2 && !discoveredOption2Name) discoveredOption2Name = "Beden";
+
+      // Dinamik seçenek keşfi (Renk ve Beden dışındaki özellikler için)
+      if (!opt1 || !opt2) {
+        const IGNORED_OPTION_KEYS = new Set([
+          "sku",
+          "stokkodu",
+          "stok_kodu",
+          "stock_code",
+          "code",
+          "barcode",
+          "barkod",
+          "ean",
+          "gtin",
+          "price",
+          "fiyat",
+          "satisfiyati",
+          "indirimlifiyat",
+          "sale_price",
+          "stock",
+          "stok",
+          "miktar",
+          "quantity",
+          "stokadedi",
+          "id",
+          "variantid",
+          "variant_id",
+          "title",
+          "baslik",
+          "name",
+          "ad",
+          "#text",
+          "#cdata",
+        ]);
+
+        for (const [k, val] of Object.entries(vNode)) {
+          const cleanK = k.replace(/^@_/, "").trim();
+          const kNorm = cleanK.toLowerCase().replace(/[_-]/g, "");
+          if (IGNORED_OPTION_KEYS.has(kNorm)) continue;
+          const valStr = typeof val === "string" ? val.trim() : typeof val === "number" ? String(val) : "";
+          if (!valStr) continue;
+
+          if (!opt1) {
+            opt1 = valStr;
+            discoveredOption1Name = cleanK;
+          } else if (!opt2 && valStr !== opt1) {
+            opt2 = valStr;
+            discoveredOption2Name = cleanK;
+          }
+        }
+      }
+
+      const explicitVTitle = getVariantFieldValue(vNode, mapping.variantTitlePath, mapping.variantsPath);
       const vTitle =
         explicitVTitle ||
         [opt1, opt2].filter(Boolean).join(" / ") ||
         `Varyant ${idx + 1}`;
 
       const vPriceStr =
-        getStringByPath(vNode, mapping.variantPricePath) || rawPrice;
+        getVariantFieldValue(vNode, mapping.variantPricePath, mapping.variantsPath) ||
+        getVariantFieldValue(vNode, "@_Price") ||
+        getVariantFieldValue(vNode, "Price") ||
+        getVariantFieldValue(vNode, "price") ||
+        getVariantFieldValue(vNode, "@_Fiyat") ||
+        getVariantFieldValue(vNode, "Fiyat") ||
+        getVariantFieldValue(vNode, "fiyat") ||
+        rawPrice;
       const vPriceMinor =
         parseAndTransformPrice(vPriceStr, transform, rawVat) ||
         finalPriceMinor;
 
       const vStockStr =
-        getStringByPath(vNode, mapping.variantStockPath) || rawStock;
+        getVariantFieldValue(vNode, mapping.variantStockPath, mapping.variantsPath) ||
+        getVariantFieldValue(vNode, "@_Stock") ||
+        getVariantFieldValue(vNode, "Stock") ||
+        getVariantFieldValue(vNode, "stock") ||
+        getVariantFieldValue(vNode, "@_Stok") ||
+        getVariantFieldValue(vNode, "Stok") ||
+        getVariantFieldValue(vNode, "stok") ||
+        rawStock;
       const vStock = transformStockQuantity(vStockStr, transform);
 
       variants.push({
@@ -224,7 +432,10 @@ function normalizeXmlItem(
     });
   }
 
-  const totalVariantStock = variants.reduce((sum, v) => sum + v.stock, 0);
+  const totalVariantStock =
+    rawVariantNodes.length > 0
+      ? variants.reduce((sum, v) => sum + v.stock, 0)
+      : finalStock;
   const minVariantPrice = variants.reduce(
     (min, v) => (v.priceMinor < min ? v.priceMinor : min),
     variants[0]?.priceMinor ?? finalPriceMinor
@@ -272,8 +483,8 @@ function normalizeXmlItem(
     finalStock: totalVariantStock,
     weightGrams,
     images,
-    option1Name: mapping.variantOption1Name || "Seçenek 1",
-    option2Name: mapping.variantOption2Name || "Seçenek 2",
+    option1Name: discoveredOption1Name || mapping.variantOption1Name || "Seçenek 1",
+    option2Name: discoveredOption2Name || mapping.variantOption2Name || "Seçenek 2",
     variants,
     attributes,
   };
@@ -342,13 +553,33 @@ async function resolveOrCreateBrandId(
   return created.id;
 }
 
+const categoryCreationCache = new Map<string, { id: string; name: string }>();
+
 async function resolveOrCreateCategoryFromXmlPath(
   sourceId: string,
-  sourceCategory: string
+  rawSourceCategory: string,
+  cache: Map<string, { id: string; name: string }> = categoryCreationCache
 ): Promise<{ id: string; name: string }> {
+  let sourceCategory = rawSourceCategory.trim();
+  if (sourceCategory.startsWith("<![CDATA[") && sourceCategory.endsWith("]]>")) {
+    sourceCategory = sourceCategory.slice(9, -3).trim();
+  }
+  if (!sourceCategory) {
+    throw new Error("Kategori yolu boş.");
+  }
+
+  const cached = cache.get(sourceCategory);
+  if (cached) return cached;
+
   const parts = sourceCategory
     .split(/>|\/|\|/)
-    .map((p) => p.trim())
+    .map((p) => {
+      let clean = p.trim();
+      if (clean.startsWith("<![CDATA[")) clean = clean.slice(9);
+      if (clean.endsWith("]]>")) clean = clean.slice(0, -3);
+      if (clean.endsWith("]]")) clean = clean.slice(0, -2);
+      return clean.trim();
+    })
     .filter(Boolean);
 
   let parentId: string | null = null;
@@ -397,12 +628,12 @@ async function resolveOrCreateCategoryFromXmlPath(
     where: {
       sourceId_sourceCategory: {
         sourceId,
-        sourceCategory,
+        sourceCategory: rawSourceCategory,
       },
     },
     create: {
       sourceId,
-      sourceCategory,
+      sourceCategory: rawSourceCategory,
       categoryId: lastCategory.id,
     },
     update: {
@@ -410,6 +641,8 @@ async function resolveOrCreateCategoryFromXmlPath(
     },
   });
 
+  cache.set(sourceCategory, lastCategory);
+  cache.set(rawSourceCategory, lastCategory);
   return lastCategory;
 }
 
@@ -481,99 +714,103 @@ async function syncVariantOptionsAndStock(params: {
     isNewProduct,
   } = params;
 
+  if (item.variants.length === 0) return;
+
   const hasOption1 = item.variants.some((v) => v.option1Value.length > 0);
   const hasOption2 = item.variants.some((v) => v.option2Value.length > 0);
 
-  let option1RecordId: string | null = null;
-  let option2RecordId: string | null = null;
+  // 1. Ürünün mevcut seçeneklerini tek seferde al
+  const existingOptions = isNewProduct
+    ? []
+    : await db.productOption.findMany({
+        where: { productId },
+        include: { values: true },
+      });
 
-  if (hasOption1) {
-    const opt1 = await db.productOption.upsert({
-      where: {
-        productId_name: {
-          productId,
-          name: item.option1Name,
-        },
-      },
-      create: {
-        productId,
-        name: item.option1Name,
-        position: 0,
-      },
-      update: {},
-      select: { id: true },
+  const optionMap = new Map(existingOptions.map((o) => [o.name, o]));
+
+  let opt1 = optionMap.get(item.option1Name);
+  if (hasOption1 && !opt1) {
+    const createdOpt1 = await db.productOption.create({
+      data: { productId, name: item.option1Name, position: 0 },
+      include: { values: true },
     });
-    option1RecordId = opt1.id;
+    opt1 = createdOpt1;
+    optionMap.set(item.option1Name, createdOpt1);
   }
 
-  if (hasOption2) {
-    const opt2 = await db.productOption.upsert({
-      where: {
-        productId_name: {
-          productId,
-          name: item.option2Name,
-        },
-      },
-      create: {
-        productId,
-        name: item.option2Name,
-        position: 1,
-      },
-      update: {},
-      select: { id: true },
+  let opt2 = optionMap.get(item.option2Name);
+  if (hasOption2 && !opt2) {
+    const createdOpt2 = await db.productOption.create({
+      data: { productId, name: item.option2Name, position: 1 },
+      include: { values: true },
     });
-    option2RecordId = opt2.id;
+    opt2 = createdOpt2;
+    optionMap.set(item.option2Name, createdOpt2);
   }
+
+  const option1ValuesMap = new Map(opt1?.values.map((v) => [v.value, v.id]));
+  const option2ValuesMap = new Map(opt2?.values.map((v) => [v.value, v.id]));
+
+  // 2. Ürünün mevcut varyantlarını TEK SORGUDAYLA bellek indeksine al
+  const existingVariants = isNewProduct
+    ? []
+    : await db.productVariant.findMany({
+        where: { productId },
+        include: {
+          inventoryLevels: { where: { warehouseId } },
+          optionValues: true,
+        },
+      });
+
+  const variantBySku = new Map(existingVariants.map((v) => [v.sku, v]));
+  const variantBySupplierCode = new Map(existingVariants.map((v) => [v.supplierCode, v]));
+  const variantByBarcode = new Map(
+    existingVariants.filter((v) => v.barcode).map((v) => [v.barcode!, v])
+  );
 
   for (let idx = 0; idx < item.variants.length; idx++) {
     const vInput = item.variants[idx];
     if (!vInput) continue;
 
-    const existingVariant = await db.productVariant.findFirst({
-      where: {
-        OR: [
-          { productId, sku: vInput.sku },
-          ...(vInput.barcode ? [{ productId, barcode: vInput.barcode }] : []),
-          { productId, supplierCode: vInput.supplierCode },
-        ],
-      },
-    });
+    const existingVariant =
+      variantBySku.get(vInput.sku) ??
+      variantBySupplierCode.get(vInput.supplierCode) ??
+      (vInput.barcode ? variantByBarcode.get(vInput.barcode) : undefined);
 
     let variantId: string;
 
     if (existingVariant) {
-      const updated = await db.productVariant.update({
-        where: { id: existingVariant.id },
-        data: {
-          title: isNewProduct ? vInput.title : existingVariant.title,
-          barcode: vInput.barcode ?? existingVariant.barcode,
-          supplierCode: vInput.supplierCode,
-          ...(updatePrice || isNewProduct
-            ? {
-                price: vInput.priceMinor,
-                compareAtPrice: vInput.compareAtPriceMinor,
-                costPrice: vInput.costPriceMinor,
-              }
-            : {}),
-        },
-        select: { id: true },
-      });
-      variantId = updated.id;
-    } else {
-      // Başka bir üründe aynı SKU varsa çakışmayı önle
-      const skuConflict = await db.productVariant.findUnique({
-        where: { sku: vInput.sku },
-        select: { id: true },
-      });
-      const safeSku = skuConflict
-        ? `${vInput.sku}-${productId.slice(-4)}`
-        : vInput.sku;
+      variantId = existingVariant.id;
+      const needsPriceUpdate =
+        (updatePrice || isNewProduct) &&
+        (existingVariant.price !== vInput.priceMinor ||
+          existingVariant.compareAtPrice !== vInput.compareAtPriceMinor ||
+          existingVariant.costPrice !== vInput.costPriceMinor);
 
+      if (needsPriceUpdate || (isNewProduct && existingVariant.title !== vInput.title)) {
+        await db.productVariant.update({
+          where: { id: variantId },
+          data: {
+            title: isNewProduct ? vInput.title : existingVariant.title,
+            barcode: vInput.barcode ?? existingVariant.barcode,
+            supplierCode: vInput.supplierCode,
+            ...(updatePrice || isNewProduct
+              ? {
+                  price: vInput.priceMinor,
+                  compareAtPrice: vInput.compareAtPriceMinor,
+                  costPrice: vInput.costPriceMinor,
+                }
+              : {}),
+          },
+        });
+      }
+    } else {
       const created = await db.productVariant.create({
         data: {
           productId,
           title: vInput.title,
-          sku: safeSku,
+          sku: vInput.sku,
           barcode: vInput.barcode,
           supplierCode: vInput.supplierCode,
           price: vInput.priceMinor,
@@ -589,144 +826,128 @@ async function syncVariantOptionsAndStock(params: {
       variantId = created.id;
     }
 
-    if (option1RecordId && vInput.option1Value) {
-      const val1 = await db.productOptionValue.upsert({
-        where: {
-          optionId_value: {
-            optionId: option1RecordId,
+    // Seçenek 1 Değer Bağlantısı
+    if (opt1 && vInput.option1Value) {
+      let val1Id = option1ValuesMap.get(vInput.option1Value);
+      if (!val1Id) {
+        const createdVal1 = await db.productOptionValue.create({
+          data: {
+            optionId: opt1.id,
             value: vInput.option1Value,
+            position: idx,
           },
-        },
-        create: {
-          optionId: option1RecordId,
-          value: vInput.option1Value,
-          position: idx,
-        },
-        update: {},
-        select: { id: true },
-      });
-      await db.variantOptionValue.upsert({
-        where: {
-          variantId_optionValueId: {
-            variantId,
-            optionValueId: val1.id,
+          select: { id: true },
+        });
+        val1Id = createdVal1.id;
+        option1ValuesMap.set(vInput.option1Value, val1Id);
+      }
+
+      const alreadyHasOptVal1 = existingVariant?.optionValues.some(
+        (ov) => ov.optionValueId === val1Id
+      );
+      if (!alreadyHasOptVal1) {
+        await db.variantOptionValue.upsert({
+          where: {
+            variantId_optionValueId: {
+              variantId,
+              optionValueId: val1Id,
+            },
           },
-        },
-        create: {
-          variantId,
-          optionValueId: val1.id,
-        },
-        update: {},
-      });
+          create: { variantId, optionValueId: val1Id },
+          update: {},
+        });
+      }
     }
 
-    if (option2RecordId && vInput.option2Value) {
-      const val2 = await db.productOptionValue.upsert({
-        where: {
-          optionId_value: {
-            optionId: option2RecordId,
+    // Seçenek 2 Değer Bağlantısı
+    if (opt2 && vInput.option2Value) {
+      let val2Id = option2ValuesMap.get(vInput.option2Value);
+      if (!val2Id) {
+        const createdVal2 = await db.productOptionValue.create({
+          data: {
+            optionId: opt2.id,
             value: vInput.option2Value,
+            position: idx,
           },
-        },
-        create: {
-          optionId: option2RecordId,
-          value: vInput.option2Value,
-          position: idx,
-        },
-        update: {},
-        select: { id: true },
-      });
-      await db.variantOptionValue.upsert({
-        where: {
-          variantId_optionValueId: {
-            variantId,
-            optionValueId: val2.id,
+          select: { id: true },
+        });
+        val2Id = createdVal2.id;
+        option2ValuesMap.set(vInput.option2Value, val2Id);
+      }
+
+      const alreadyHasOptVal2 = existingVariant?.optionValues.some(
+        (ov) => ov.optionValueId === val2Id
+      );
+      if (!alreadyHasOptVal2) {
+        await db.variantOptionValue.upsert({
+          where: {
+            variantId_optionValueId: {
+              variantId,
+              optionValueId: val2Id,
+            },
           },
-        },
-        create: {
-          variantId,
-          optionValueId: val2.id,
-        },
-        update: {},
-      });
+          create: { variantId, optionValueId: val2Id },
+          update: {},
+        });
+      }
     }
 
+    // Stok ve Envanter Güncellemesi
     if (updateStock || isNewProduct) {
-      const currentLevel = await db.inventoryLevel.findUnique({
-        where: {
-          variantId_warehouseId: {
-            variantId,
-            warehouseId,
-          },
-        },
-      });
+      const currentLevel = existingVariant?.inventoryLevels[0];
       const oldOnHand = currentLevel?.onHand ?? 0;
       const delta = vInput.stock - oldOnHand;
 
-      await db.inventoryLevel.upsert({
-        where: {
-          variantId_warehouseId: {
-            variantId,
-            warehouseId,
+      if (!currentLevel || delta !== 0) {
+        await db.inventoryLevel.upsert({
+          where: {
+            variantId_warehouseId: {
+              variantId,
+              warehouseId,
+            },
           },
-        },
-        create: {
-          variantId,
-          warehouseId,
-          onHand: vInput.stock,
-          reserved: 0,
-        },
-        update: {
-          onHand: vInput.stock,
-        },
-      });
-
-      if (delta !== 0) {
-        await db.stockMovement.create({
-          data: {
+          create: {
             variantId,
             warehouseId,
-            type: "IMPORT",
-            quantity: delta,
-            balanceAfter: vInput.stock,
-            reason: `XML Senkronizasyonu (${sourceName})`,
-            referenceType: "FeedRun",
-            referenceId: runId,
+            onHand: vInput.stock,
+            reserved: 0,
+          },
+          update: {
+            onHand: vInput.stock,
           },
         });
+
+        if (delta !== 0) {
+          await db.stockMovement.create({
+            data: {
+              variantId,
+              warehouseId,
+              type: "IMPORT",
+              quantity: delta,
+              balanceAfter: vInput.stock,
+              reason: `XML Senkronizasyonu (${sourceName})`,
+              referenceType: "FeedRun",
+              referenceId: runId,
+            },
+          });
+        }
       }
     }
   }
 
-  // Ürünün toplam stok ve min/max fiyat özet alanlarını güncelle
-  const allVariants = await db.productVariant.findMany({
-    where: { productId, isActive: true },
-    include: { inventoryLevels: true },
+  // 3. Ürünün toplam stok ve min/max fiyat özet alanlarını bellekteki varyant verileriyle güncelle (findMany sorgusuna gerek yok!)
+  const minPrice = item.finalPriceMinor;
+  const maxPrice = Math.max(...item.variants.map((v) => v.priceMinor));
+  const totalStock = item.finalStock;
+
+  await db.product.update({
+    where: { id: productId },
+    data: {
+      minPrice,
+      maxPrice,
+      totalStock,
+    },
   });
-
-  if (allVariants.length > 0) {
-    const prices = allVariants.map((v) => v.price);
-    const minPrice = Math.min(...prices);
-    const maxPrice = Math.max(...prices);
-    const totalStock = allVariants.reduce(
-      (sum, v) =>
-        sum +
-        v.inventoryLevels.reduce(
-          (lSum, lvl) => lSum + Math.max(0, lvl.onHand - lvl.reserved),
-          0
-        ),
-      0
-    );
-
-    await db.product.update({
-      where: { id: productId },
-      data: {
-        minPrice,
-        maxPrice,
-        totalStock,
-      },
-    });
-  }
 }
 
 /**
@@ -757,6 +978,7 @@ export async function runFeedImport(
       status: "RUNNING",
       trigger,
       startedAt: new Date(),
+      message: "XML içeriği indiriliyor ve çözümleniyor...",
     },
   });
 
@@ -855,6 +1077,13 @@ export async function runFeedImport(
     const doc = parseXmlDocument(xmlBuffer);
     const rawItems = extractItemsByPath(doc, effectiveItemPath);
     stats.total = rawItems.length;
+    await db.feedRun.update({
+      where: { id: run.id },
+      data: {
+        stats: stats as unknown as Prisma.InputJsonValue,
+        message: `${rawItems.length} ürün bulundu, işleniyor...`,
+      },
+    });
 
     const existingLinks = await db.productSourceLink.findMany({
       where: { sourceId: source.id },
@@ -1274,6 +1503,18 @@ export async function runFeedImport(
             err instanceof Error
               ? err.message
               : "Ürün kaydedilirken beklenmeyen hata oluştu.",
+        });
+      }
+
+      if ((i + 1) % 25 === 0 || i + 1 === rawItems.length) {
+        await db.feedRun.update({
+          where: { id: run.id },
+          data: {
+            stats: stats as unknown as Prisma.InputJsonValue,
+            message: `İşleniyor: ${i + 1} / ${rawItems.length} (%${Math.round(
+              ((i + 1) / rawItems.length) * 100
+            )})`,
+          },
         });
       }
     }

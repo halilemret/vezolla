@@ -20,6 +20,7 @@ import {
 } from "@phosphor-icons/react";
 import { formatMoney } from "@/lib/money";
 import {
+  getFeedSourceRunsAction,
   inspectAndSaveItemPathAction,
   loadXmlSourceWizardAction,
   saveFeedCategoryMappingsAction,
@@ -74,6 +75,26 @@ const WIZARD_STEPS: Array<{
   },
 ];
 
+function getPropertyFlexible(record: Record<string, unknown>, key: string): unknown {
+  if (key in record && record[key] !== undefined) return record[key];
+  const attrKey = `@_${key}`;
+  if (attrKey in record && record[attrKey] !== undefined) return record[attrKey];
+  if (key.startsWith("@_")) {
+    const stripped = key.slice(2);
+    if (stripped in record && record[stripped] !== undefined) return record[stripped];
+  }
+  const lowerKey = key.toLowerCase();
+  const cleanLower = lowerKey.replace(/^@_/, "");
+  for (const [k, v] of Object.entries(record)) {
+    const kLower = k.toLowerCase();
+    const kClean = kLower.replace(/^@_/, "");
+    if (kLower === lowerKey || kClean === cleanLower || kLower === `@_${cleanLower}`) {
+      return v;
+    }
+  }
+  return undefined;
+}
+
 function readPreviewScalar(
   sampleItem: Record<string, unknown> | null,
   path: string
@@ -86,11 +107,44 @@ function readPreviewScalar(
       cur = cur[0];
     }
     if (typeof cur === "object" && cur !== null && !Array.isArray(cur)) {
-      cur = (cur as Record<string, unknown>)[part];
+      cur = getPropertyFlexible(cur as Record<string, unknown>, part);
     } else {
-      return "";
+      cur = undefined;
+      break;
     }
   }
+
+  // Eğer ana ürün seviyesinde bulunamadıysa varyant düğümü içinde ilk varyantı kontrol et
+  if ((cur === null || cur === undefined) && parts.length === 1) {
+    const fallbackContainers = [
+      "varriants.variant",
+      "variants.variant",
+      "Varyantlar.Varyant",
+      "Secenekler.Secenek",
+      "Variants.Variant",
+    ];
+    for (const fc of fallbackContainers) {
+      let sub: unknown = sampleItem;
+      for (const p of fc.split(".")) {
+        if (Array.isArray(sub)) sub = sub[0];
+        if (typeof sub === "object" && sub !== null && !Array.isArray(sub)) {
+          sub = getPropertyFlexible(sub as Record<string, unknown>, p);
+        } else {
+          sub = undefined;
+          break;
+        }
+      }
+      if (Array.isArray(sub)) sub = sub[0];
+      if (typeof sub === "object" && sub !== null && !Array.isArray(sub)) {
+        const found = getPropertyFlexible(sub as Record<string, unknown>, parts[0]!);
+        if (found !== undefined && found !== null) {
+          cur = found;
+          break;
+        }
+      }
+    }
+  }
+
   if (cur === null || cur === undefined) return "";
   if (typeof cur === "string" || typeof cur === "number" || typeof cur === "boolean") {
     return String(cur).slice(0, 100);
@@ -104,6 +158,23 @@ function readPreviewScalar(
     return "{Nesne}";
   }
   return "";
+}
+
+function computeFieldOptions(rawFieldPaths: string[]): string[] {
+  const set = new Set<string>(rawFieldPaths);
+  for (const fp of rawFieldPaths) {
+    if (fp.includes(".")) {
+      const parts = fp.split(".");
+      const last = parts[parts.length - 1];
+      if (last) {
+        set.add(last);
+        if (last.startsWith("@_")) {
+          set.add(last.slice(2));
+        }
+      }
+    }
+  }
+  return Array.from(set);
 }
 
 export default function AdminXmlSourceWizardPage() {
@@ -235,6 +306,33 @@ export default function AdminXmlSourceWizardPage() {
     void loadWizard();
   }, [loadWizard]);
 
+  // Canlı FeedRun ilerleme takibi
+  const isAnyRunRunning =
+    Boolean(wizardData?.runs.some((r) => r.status === "RUNNING")) || busy;
+
+  React.useEffect(() => {
+    if (!isAnyRunRunning || !sourceId) return;
+
+    const intervalId = setInterval(async () => {
+      try {
+        const res = await getFeedSourceRunsAction(sourceId);
+        if (res.ok && res.runs) {
+          setWizardData((prev) =>
+            prev ? { ...prev, runs: res.runs! } : prev
+          );
+          const running = res.runs.find((r) => r.status === "RUNNING");
+          if (running) {
+            setSelectedRunId(running.id);
+          }
+        }
+      } catch {
+        // Sessizce devam et
+      }
+    }, 1500);
+
+    return () => clearInterval(intervalId);
+  }, [isAnyRunRunning, sourceId]);
+
   if (loading) {
     return (
       <div className="rounded-md border border-zinc-200 bg-white p-8 text-center text-xs text-zinc-600">
@@ -260,7 +358,8 @@ export default function AdminXmlSourceWizardPage() {
     );
   }
 
-  const fieldOptions = wizardData.inspection?.fieldPaths ?? [];
+  const rawFieldPaths = wizardData.inspection?.fieldPaths ?? [];
+  const fieldOptions = computeFieldOptions(rawFieldPaths);
   const sampleItem = wizardData.inspection?.sampleItem ?? null;
 
   const handleSaveConnection = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -446,6 +545,7 @@ export default function AdminXmlSourceWizardPage() {
   const handleRunFeed = async (mode: "PREVIEW" | "APPLY") => {
     setBusy(true);
     setFeedback(null);
+    setActiveStep(5);
     try {
       const res = await triggerFeedRunAction(sourceId, mode);
       if (!res.ok || !res.result) {
@@ -453,20 +553,35 @@ export default function AdminXmlSourceWizardPage() {
           type: "error",
           text: res.error ?? "Senkronizasyon çalıştırılamadı.",
         });
-        await loadWizard();
-        return;
+      } else {
+        setSelectedRunId(res.result.runId);
+        setFeedback({
+          type: "success",
+          text:
+            mode === "PREVIEW"
+              ? `Kuru çalıştırma (Önizleme) tamamlandı: ${res.result.stats.total} ürün incelendi (${res.result.stats.created} yeni, ${res.result.stats.updated} güncellenecek).`
+              : `Gerçek içe aktarma tamamlandı: ${res.result.stats.created} yeni ürün oluşturuldu, ${res.result.stats.updated} ürün güncellendi.`,
+        });
       }
-      await loadWizard();
-      setSelectedRunId(res.result.runId);
-      setActiveStep(5);
+    } catch (err) {
       setFeedback({
-        type: "success",
+        type: "error",
         text:
-          mode === "PREVIEW"
-            ? `Kuru çalıştırma (Önizleme) tamamlandı: ${res.result.stats.total} ürün incelendi (${res.result.stats.created} yeni, ${res.result.stats.updated} güncellenecek).`
-            : `Gerçek içe aktarma tamamlandı: ${res.result.stats.created} yeni ürün oluşturuldu, ${res.result.stats.updated} ürün güncellendi.`,
+          err instanceof Error
+            ? err.message
+            : "Senkronizasyon sırasında bir hata oluştu.",
       });
     } finally {
+      try {
+        const runsRes = await getFeedSourceRunsAction(sourceId);
+        if (runsRes.ok && runsRes.runs) {
+          setWizardData((prev) =>
+            prev ? { ...prev, runs: runsRes.runs! } : prev
+          );
+        }
+      } catch {
+        // Sessizce devam et
+      }
       setBusy(false);
     }
   };
@@ -544,11 +659,14 @@ export default function AdminXmlSourceWizardPage() {
         ) : null}
         <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
           <select
-            value={fieldOptions.includes(currentValue) ? currentValue : ""}
+            value={currentValue}
             onChange={(e) => updateMappingField(fieldKey, e.target.value)}
             className="rounded border border-zinc-300 bg-white px-2.5 py-1.5 font-mono text-xs text-zinc-900 focus:border-zinc-900 focus:outline-none"
           >
             <option value="">-- XML Alanı Seçin --</option>
+            {currentValue && !fieldOptions.includes(currentValue) ? (
+              <option value={currentValue}>{currentValue} (Geçerli Değer)</option>
+            ) : null}
             {fieldOptions.map((fp) => (
               <option key={fp} value={fp}>
                 {fp}
@@ -778,6 +896,33 @@ export default function AdminXmlSourceWizardPage() {
             </button>
           </div>
         </form>
+      ) : null}
+
+      {/* Arka Planda Çalışan Aktarım Bilgilendirmesi */}
+      {wizardData?.runs.some((r) => r.status === "RUNNING") ? (
+        <div className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2.5">
+            <ArrowsClockwise className="h-5 w-5 animate-spin text-amber-700 shrink-0" />
+            <div>
+              <div className="text-xs font-bold text-amber-950">
+                Arka planda XML senkronizasyonu çalışıyor...
+              </div>
+              <div className="text-[11px] text-amber-800">
+                {wizardData.runs.find((r) => r.status === "RUNNING")?.message ||
+                  "Ürünler işleniyor..."}
+              </div>
+            </div>
+          </div>
+          {activeStep !== 5 ? (
+            <button
+              type="button"
+              onClick={() => setActiveStep(5)}
+              className="inline-flex items-center gap-1.5 self-start rounded-md bg-[#9a3412] px-3 py-1.5 text-xs font-bold text-white hover:bg-[#7c2d12] sm:self-auto"
+            >
+              <span>Canlı Raporu Gör (Adım 5)</span>
+            </button>
+          ) : null}
+        </div>
       ) : null}
 
       {/* Bildirim Çubuğu */}
@@ -2072,6 +2217,66 @@ export default function AdminXmlSourceWizardPage() {
 
           {selectedRun ? (
             <div className="space-y-5">
+              {/* Canlı İlerleme Çubuğu */}
+              {selectedRun.status === "RUNNING" ? (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ArrowsClockwise className="h-5 w-5 animate-spin text-amber-700" />
+                      <span className="text-xs font-bold text-amber-950">
+                        Senkronizasyon Devam Ediyor (
+                        {selectedRun.mode === "PREVIEW"
+                          ? "Önizleme"
+                          : "Gerçek Aktarım"}
+                        )
+                      </span>
+                    </div>
+                    <span className="font-mono text-xs font-bold text-amber-900">
+                      {selectedRun.stats?.total
+                        ? `%${Math.min(
+                            100,
+                            Math.round(
+                              (((selectedRun.stats.created ?? 0) +
+                                (selectedRun.stats.updated ?? 0) +
+                                (selectedRun.stats.unchanged ?? 0) +
+                                (selectedRun.stats.skipped ?? 0) +
+                                (selectedRun.stats.failed ?? 0)) /
+                                selectedRun.stats.total) *
+                                100
+                            )
+                          )}`
+                        : "Hazırlanıyor..."}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-xs text-amber-800">
+                    {selectedRun.message || "XML ürünleri işleniyor..."}
+                  </div>
+                  {selectedRun.stats && selectedRun.stats.total > 0 && (
+                    <div className="mt-3">
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-amber-200">
+                        <div
+                          className="h-full bg-[#9a3412] transition-all duration-300"
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              Math.round(
+                                (((selectedRun.stats.created ?? 0) +
+                                  (selectedRun.stats.updated ?? 0) +
+                                  (selectedRun.stats.unchanged ?? 0) +
+                                  (selectedRun.stats.skipped ?? 0) +
+                                  (selectedRun.stats.failed ?? 0)) /
+                                  selectedRun.stats.total) *
+                                  100
+                              )
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
               {/* Seçili Çalışma Özeti */}
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
                 <div className="rounded-md border border-zinc-200 bg-[#fafaf9] p-3">

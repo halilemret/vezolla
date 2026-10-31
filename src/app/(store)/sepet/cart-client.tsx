@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Trash as Trash2,
   Tag,
@@ -17,18 +17,25 @@ import {
   Clock,
   ArrowCounterClockwise,
   CaretDown,
+  WarningCircle,
+  Sparkle,
+  Crown,
 } from "@phosphor-icons/react";
 import { formatMoney } from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
+  addCartItemAction,
   updateCartItemQuantityAction,
   removeCartItemAction,
   applyPromoCodeAction,
   removePromoCodeAction,
 } from "@/modules/checkout/actions";
+import { FreeShippingBar } from "@/components/store/free-shipping-bar";
+import { CartUpsells } from "@/components/store/cart-upsells";
 import type { CartSummary } from "@/modules/checkout/cart";
+import type { ClubSettings } from "@/lib/settings/schemas";
 
 export interface AvailablePromo {
   code: string;
@@ -41,14 +48,17 @@ export interface CartClientProps {
   initialSummary: CartSummary;
   freeShippingThresholdMinor?: number;
   availablePromotions?: AvailablePromo[];
+  clubSettings?: ClubSettings | null;
 }
 
 export function CartClient({
   initialSummary,
-  freeShippingThresholdMinor = 50000,
+  freeShippingThresholdMinor = 150000,
   availablePromotions = [],
+  clubSettings,
 }: CartClientProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [summary, setSummary] = React.useState<CartSummary>(initialSummary);
   const [busyLineId, setBusyLineId] = React.useState<string | null>(null);
   const [promoInput, setPromoInput] = React.useState("");
@@ -57,6 +67,17 @@ export function CartClient({
   const [isPromoOpen, setIsPromoOpen] = React.useState(
     initialSummary.appliedPromotions.length > 0
   );
+
+  React.useEffect(() => {
+    if (searchParams.get("error") === "min_order") {
+      setErrorMessage(
+        `Ödemeye geçebilmek için sepet tutarınız en az ${formatMoney(
+          initialSummary.minOrderSubtotalMinor,
+          initialSummary.currency
+        )} olmalıdır.`
+      );
+    }
+  }, [searchParams, initialSummary.minOrderSubtotalMinor, initialSummary.currency]);
 
   // 15 Dakikalık Sepet Rezervasyon Sayacı (Urgency / Conversion Trigger)
   const [timeLeftSeconds, setTimeLeftSeconds] = React.useState<number>(14 * 60 + 59);
@@ -84,9 +105,13 @@ export function CartClient({
     summary.subtotalMinor - summary.discountTotalMinor
   );
   const isFreeShipping =
-    summary.shippingTotalMinor === 0 ||
     currentNetSubtotal >= freeShippingThresholdMinor ||
-    summary.freeShippingByPromo;
+    Boolean(summary.freeShippingByPromo);
+
+  const cartVariantIds = React.useMemo(
+    () => summary.lines.map((l) => l.variantId),
+    [summary.lines]
+  );
 
   const remainingForFreeShipping = isFreeShipping
     ? 0
@@ -165,6 +190,21 @@ export function CartClient({
     }
   }
 
+  async function handleAddUpsell(variantId: string) {
+    setErrorMessage(null);
+    try {
+      const res = await addCartItemAction(variantId, 1);
+      if (!res.ok) {
+        setErrorMessage(res.error ?? "Ürün sepete eklenemedi.");
+      } else if (res.summary) {
+        setSummary(res.summary);
+        router.refresh();
+      }
+    } catch {
+      setErrorMessage("Ürün eklenirken bir hata oluştu.");
+    }
+  }
+
   if (summary.lines.length === 0) {
     return (
       <EmptyState
@@ -207,58 +247,20 @@ export function CartClient({
             </div>
           </div>
 
-          {/* 2. Ücretsiz Kargo İlerleme Çubuğu */}
-          <div className="rounded-[var(--radius-base,0.5rem)] border border-[var(--border)] bg-[var(--card)] p-3 shadow-2xs transition-all">
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5 text-xs">
-              <div className="flex items-center gap-2 font-medium text-[var(--ink)]">
-                <div
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
-                    isFreeShipping
-                      ? "bg-emerald-600 text-white"
-                      : "bg-[var(--surface)] border border-[var(--border)] text-[var(--accent)]"
-                  }`}
-                >
-                  {isFreeShipping ? (
-                    <Check className="h-3.5 w-3.5" weight="bold" />
-                  ) : (
-                    <Truck className="h-3.5 w-3.5" weight="bold" />
-                  )}
-                </div>
-                {isFreeShipping ? (
-                  <span className="text-xs sm:text-sm font-bold text-[var(--ink)]">
-                    Tebrikler! Siparişinizde Kargo Ücretsiz! 🎉
-                  </span>
-                ) : (
-                  <span>
-                    Kargonuzun <strong>Ücretsiz</strong> olması için{" "}
-                    <strong className="text-[var(--accent)] font-bold">
-                      {formatMoney(remainingForFreeShipping, summary.currency)}
-                    </strong>{" "}
-                    değerinde ürün ekleyin!
-                  </span>
-                )}
-              </div>
+          {/* 2. Dinamik Kargo Barem Barı (1.500 TL Eşiği) */}
+          <FreeShippingBar
+            subtotalMinor={currentNetSubtotal}
+            thresholdMinor={freeShippingThresholdMinor}
+            freeShippingByPromo={isFreeShipping}
+            currency={summary.currency}
+          />
 
-              {!isFreeShipping && (
-                <Link
-                  href="/katalog"
-                  className="text-[11px] font-bold text-[var(--accent)] hover:underline shrink-0"
-                >
-                  + Ürün Ekle
-                </Link>
-              )}
-            </div>
-
-            {/* İlerleme Çubuğu */}
-            <div className="relative h-2 w-full overflow-hidden rounded-full bg-[var(--surface)] border border-[var(--border)]">
-              <div
-                className={`h-full transition-all duration-500 ease-out rounded-full ${
-                  isFreeShipping ? "bg-emerald-600" : "bg-[var(--accent)]"
-                }`}
-                style={{ width: `${shippingProgressPercent}%` }}
-              />
-            </div>
-          </div>
+          {/* 1-Tık Tamamlayıcı Aksesuar (Upsell) */}
+          <CartUpsells
+            onAddToCart={handleAddUpsell}
+            currency={summary.currency}
+            excludeVariantIds={cartVariantIds}
+          />
 
           {/* 3. Sepet Kalemleri */}
           <div className="divide-y divide-[var(--border)] rounded-[var(--radius-base,0.75rem)] border border-[var(--border)] bg-[var(--card)] shadow-xs">
@@ -308,18 +310,29 @@ export function CartClient({
 
                       {/* Stok Aciliyet Rozeti */}
                       {isLowStock && (
-                        <div className="inline-flex items-center gap-1 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:text-amber-200">
-                          <Clock className="h-3 w-3 text-amber-600" />
+                        <div className="inline-flex items-center gap-1 rounded-[var(--radius-base,0.25rem)] bg-[var(--surface)] border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--accent)]">
+                          <Clock className="h-3 w-3 text-[var(--accent)]" />
                           <span>Son {line.availableStock} ürün kaldı!</span>
                         </div>
                       )}
 
-                      <div className="flex items-baseline gap-2 pt-0.5">
+                      <div className="flex flex-wrap items-baseline gap-2 pt-0.5">
                         <span className="text-xs font-semibold tabular-nums text-[var(--ink)]">
                           Birim: {formatMoney(line.unitPriceMinor, summary.currency)}
                         </span>
+                        {line.compareAtPriceMinor && line.compareAtPriceMinor > line.unitPriceMinor && (
+                          <span className="text-[11px] text-[var(--muted)] line-through tabular-nums">
+                            {formatMoney(line.compareAtPriceMinor, summary.currency)}
+                          </span>
+                        )}
+                        {line.isClubPriceApplied && (
+                          <span className="inline-flex items-center gap-1 rounded-[var(--radius-base,0.25rem)] bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:text-amber-300">
+                            <Crown className="h-3 w-3 text-amber-600 dark:text-amber-400 shrink-0" weight="fill" />
+                            <span>Kulüp Özel</span>
+                          </span>
+                        )}
                         {line.discountMinor > 0 && (
-                          <span className="inline-flex items-center gap-1 rounded bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:text-emerald-300">
+                          <span className="inline-flex items-center gap-1 rounded-[var(--radius-base,0.25rem)] bg-[var(--surface)] border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">
                             -{formatMoney(line.discountMinor, summary.currency)} İndirim
                           </span>
                         )}
@@ -459,17 +472,77 @@ export function CartClient({
                   {formatMoney(summary.totalMinor, summary.currency)}
                 </dd>
               </div>
+
+              {/* VezollaClub Sadakat Puanı Kazanım Rozeti */}
+              {(() => {
+                if (clubSettings && !clubSettings.cartShowEarningBadge) return null;
+                const priceInTl = Math.round(summary.totalMinor / 100);
+                const earnRate = (clubSettings?.earningRatePercent ?? 10) / 100;
+                const clubPoints = Math.max(1, Math.round(priceInTl * earnRate));
+                const pointValueKurus = clubSettings?.pointValueKurus ?? 50;
+                const cashValueTl = Math.round((clubPoints * pointValueKurus) / 100);
+
+                const template =
+                  clubSettings?.cartEarningBadgeTemplate ??
+                  "Bu alışverişinizden {points} VezollaClub Puanı ({value} TL Değerinde) Kazanacaksınız.";
+
+                const renderedText = template
+                  .replace("{points}", `${clubPoints} VezollaClub Puanı`)
+                  .replace("{value}", String(cashValueTl));
+
+                return (
+                  <div className="flex items-center gap-2 rounded-[var(--radius-base,0.375rem)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--ink)]">
+                    <Sparkle className="h-4 w-4 shrink-0 text-[var(--accent)]" weight="fill" />
+                    <span>{renderedText}</span>
+                  </div>
+                );
+              })()}
             </dl>
 
+            {/* Minimum Sepet Tutarı Uyarısı */}
+            {!summary.isMinOrderSubtotalMet && summary.minOrderSubtotalMinor > 0 ? (
+              <div className="rounded-[var(--radius-base,0.5rem)] border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950 space-y-1.5">
+                <div className="flex items-center gap-1.5 font-bold text-amber-900">
+                  <WarningCircle className="h-4 w-4 text-amber-700 shrink-0" weight="fill" />
+                  <span>Minimum Sipariş Tutarı: {formatMoney(summary.minOrderSubtotalMinor, summary.currency)}</span>
+                </div>
+                <p className="text-[11px] leading-relaxed text-amber-800">
+                  Siparişi tamamlayabilmek için sepetinize en az{" "}
+                  <strong>{formatMoney(summary.minOrderRemainingMinor, summary.currency)}</strong> değerinde daha ürün eklemelisiniz.
+                </p>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-amber-200">
+                  <div
+                    className="h-full bg-amber-600 transition-all duration-300"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.round((currentNetSubtotal / summary.minOrderSubtotalMinor) * 100)
+                      )}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            ) : null}
+
             {/* BÜYÜK ÖDEME BUTONU (HEMEN TOPLAMIN ALTINDA - SCROLLSUZ GÖRÜNÜR) */}
-            <Link
-              href="/odeme"
-              className="group flex h-11 w-full items-center justify-center gap-2 rounded-[var(--radius-base,0.5rem)] bg-[var(--accent)] px-4 text-xs sm:text-sm font-bold text-[var(--accent-fg,#ffffff)] shadow-md hover:opacity-95 active:scale-98 transition-all"
-            >
-              <LockKey className="h-4 w-4" weight="bold" />
-              <span>Güvenle Ödemeye Geç</span>
-              <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
-            </Link>
+            {summary.isMinOrderSubtotalMet ? (
+              <Link
+                href="/odeme"
+                className="group flex h-11 w-full items-center justify-center gap-2 rounded-[var(--radius-base,0.5rem)] bg-[var(--accent)] px-4 text-xs sm:text-sm font-bold text-[var(--accent-fg,#ffffff)] shadow-md hover:opacity-95 active:scale-98 transition-all"
+              >
+                <LockKey className="h-4 w-4" weight="bold" />
+                <span>Güvenle Ödemeye Geç</span>
+                <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+              </Link>
+            ) : (
+              <div
+                title={`Minimum sipariş tutarı: ${formatMoney(summary.minOrderSubtotalMinor, summary.currency)}`}
+                className="flex h-11 w-full cursor-not-allowed items-center justify-center gap-2 rounded-[var(--radius-base,0.5rem)] border border-zinc-200 bg-zinc-100 px-4 text-xs sm:text-sm font-semibold text-zinc-500 shadow-none select-none"
+              >
+                <LockKey className="h-4 w-4" weight="bold" />
+                <span>Minimum Tutar Karşılanmadı</span>
+              </div>
+            )}
 
             {/* Kupon Kodu Bölümü (Kompakt / Akordeon) */}
             <div className="border-t border-[var(--border)] pt-2.5">

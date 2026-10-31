@@ -172,6 +172,7 @@ export async function createPromotionFromFormAction(
       minSubtotalMinor: minSubtotalRaw ? parseMoneyInput(minSubtotalRaw) : undefined,
       categoryIds,
       productIds,
+      variantIds: [],
       customerGroupIds,
       customerEmails,
       customerIds,

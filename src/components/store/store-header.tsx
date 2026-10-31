@@ -27,6 +27,7 @@ import {
 } from "@/components/store/mobile-drawer";
 import { TopAnnouncementBar } from "@/components/store/top-announcement-bar";
 import { useWishlist } from "@/components/store/wishlist-context";
+import { useCart } from "@/components/store/cart-context";
 import { InstantSearch } from "@/components/store/instant-search";
 import { MobileSearchModal } from "@/components/store/mobile-search-modal";
 import { DesktopMegaMenu } from "@/components/store/desktop-mega-menu";
@@ -57,6 +58,8 @@ export function StoreHeader({
     activeRootId: string | null;
   }>({ isOpen: false, activeRootId: null });
   const { wishlistCount } = useWishlist();
+  const { openCart, cartCount: liveCartCount } = useCart();
+  const displayCartCount = liveCartCount || cartCount;
 
   // Kategori slug ve ID haritası
   const categoryMap = React.useMemo(() => {
@@ -189,21 +192,23 @@ export function StoreHeader({
               </div>
             </Link>
 
-            {/* Canlı Sepet Butonu */}
-            <Link
-              href="/sepet"
-              className="group relative inline-flex items-center gap-2 rounded-[var(--radius-base,0.375rem)] bg-[var(--accent)] px-3 sm:px-3.5 py-2 text-xs font-semibold text-[var(--accent-fg,#ffffff)] shadow-sm hover:opacity-95 transition-all active:scale-95 h-10"
+            {/* Canlı Sepet Butonu (Slide-Over Drawer Açar) */}
+            <button
+              type="button"
+              onClick={openCart}
+              aria-label={`Alışveriş Sepeti (${displayCartCount} ürün)`}
+              className="group relative inline-flex items-center gap-2 rounded-[var(--radius-base,0.375rem)] bg-[var(--accent)] px-3 sm:px-3.5 py-2 text-xs font-semibold text-[var(--accent-fg,#ffffff)] shadow-sm hover:opacity-95 transition-all active:scale-95 h-10 cursor-pointer"
             >
               <div className="relative">
                 <ShoppingBag className="h-4 w-4" />
-                {cartCount > 0 && (
+                {displayCartCount > 0 && (
                   <span className="absolute -top-1.5 -right-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--ink)] px-1 font-mono text-[9px] font-bold text-[var(--surface)] shadow-xs animate-bounce">
-                    {cartCount}
+                    {displayCartCount}
                   </span>
                 )}
               </div>
               <span className="font-medium hidden sm:inline">Sepetim</span>
-            </Link>
+            </button>
           </div>
         </div>
 

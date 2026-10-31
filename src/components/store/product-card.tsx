@@ -10,11 +10,12 @@ import {
   Clock,
   Truck,
   Eye,
+  Crown,
 } from "@phosphor-icons/react";
 import { formatMoney } from "@/lib/money";
-import { addCartItemAction } from "@/modules/checkout/actions";
 import { trackStoreEvent } from "@/components/store/visitor-tracker";
 import { useWishlist } from "@/components/store/wishlist-context";
+import { useCart } from "@/components/store/cart-context";
 
 export interface ProductCardData {
   id: string;
@@ -29,10 +30,12 @@ export interface ProductCardData {
   images?: Array<{ url: string; alt?: string | null }>;
   imageUrl?: string | null;
   compareAtPrice?: number | null;
+  clubPrice?: number | null;
   variants?: Array<{
     id: string;
     price: number;
     compareAtPrice?: number | null;
+    clubPrice?: number | null;
   }>;
 }
 
@@ -60,6 +63,11 @@ export function ProductCard({
   const discountRate = hasDiscount && compareAt ? Math.round(((compareAt - price) / compareAt) * 100) : 0;
   const savingsMinor = hasDiscount && compareAt ? compareAt - price : 0;
 
+  // VezollaClub Kulüp Özel Fiyatı (Sadece yönetimden atanmış ürünlerde gösterilir)
+  const clubPrice = firstVariant?.clubPrice ?? product.clubPrice ?? null;
+  const hasClubDiscount =
+    typeof clubPrice === "number" && clubPrice > 0 && clubPrice < price;
+
   const image =
     product.images?.[0] ??
     (product.imageUrl ? { url: product.imageUrl, alt: product.title } : undefined);
@@ -73,6 +81,7 @@ export function ProductCard({
 
   // Favori ve Sepete Ekleme State
   const { isWishlisted: checkIsWishlisted, toggleWishlist } = useWishlist();
+  const { addItem } = useCart();
   const isWishlisted = checkIsWishlisted(product.id);
   const [isAdding, setIsAdding] = React.useState(false);
   const [justAdded, setJustAdded] = React.useState(false);
@@ -96,7 +105,7 @@ export function ProductCard({
 
     setIsAdding(true);
     try {
-      const res = await addCartItemAction(firstVariant.id, 1);
+      const res = await addItem(firstVariant.id, 1);
       if (res.ok) {
         setJustAdded(true);
         trackStoreEvent({
@@ -159,12 +168,22 @@ export function ProductCard({
               <span className="rounded-md bg-zinc-900 px-2.5 py-1 text-[11px] font-semibold text-white shadow-xs">
                 Tükendi
               </span>
-            ) : hasDiscount ? (
-              <span className="flex items-center gap-1 rounded-md bg-[var(--accent)] px-2.5 py-1 font-mono text-[11px] font-bold text-[var(--accent-fg)] shadow-xs">
-                <span>%{discountRate}</span>
-                <span className="text-[9px] font-sans font-medium uppercase tracking-wider">Fırsat</span>
-              </span>
-            ) : null}
+            ) : (
+              <>
+                {hasDiscount && (
+                  <span className="flex items-center gap-1 rounded-md bg-[var(--accent)] px-2.5 py-1 font-mono text-[11px] font-bold text-[var(--accent-fg)] shadow-xs">
+                    <span>%{discountRate}</span>
+                    <span className="text-[9px] font-sans font-medium uppercase tracking-wider">Fırsat</span>
+                  </span>
+                )}
+                {hasClubDiscount && (
+                  <span className="flex items-center gap-1 rounded-md bg-amber-500/95 text-zinc-950 px-2 py-0.5 text-[10px] font-bold shadow-xs">
+                    <Crown className="h-3 w-3 text-zinc-950 shrink-0" weight="fill" />
+                    <span>Kulüp Özel</span>
+                  </span>
+                )}
+              </>
+            )}
           </div>
 
           {/* Sağ Üst: Favori Kalp Butonu (Dopamin Etkileşimi) */}
@@ -260,7 +279,7 @@ export function ProductCard({
       </div>
 
       {/* Fiyat ve Kazanç Alt Çubuğu */}
-      <div className="border-t border-[var(--border)] p-4 pt-3 space-y-1.5 bg-[var(--surface)]/40 rounded-b-[var(--radius-base,0.75rem)]">
+      <div className="border-t border-[var(--border)] p-4 pt-3 space-y-2 bg-[var(--surface)]/40 rounded-b-[var(--radius-base,0.75rem)]">
         <div className="flex items-baseline justify-between gap-2">
           {/* Fiyatlar */}
           <div className="flex flex-col tabular-nums">
@@ -296,6 +315,21 @@ export function ProductCard({
             <Eye className="h-3 w-3" />
           </Link>
         </div>
+
+        {/* VezollaClub Kulüp Özel Fiyatı */}
+        {hasClubDiscount && (
+          <div className="flex items-center justify-between gap-1.5 rounded-[var(--radius-base,0.375rem)] border border-amber-500/30 bg-amber-500/10 px-2 py-1">
+            <div className="flex items-center gap-1 min-w-0">
+              <Crown className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" weight="fill" />
+              <span className="text-[10.5px] font-bold text-amber-800 dark:text-amber-300 truncate">
+                Kulüp Özel:
+              </span>
+            </div>
+            <span className="text-xs font-black text-[var(--ink)] tabular-nums shrink-0">
+              {formatMoney(clubPrice)}
+            </span>
+          </div>
+        )}
       </div>
     </article>
   );

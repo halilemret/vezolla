@@ -36,6 +36,7 @@ export const productVariantInputSchema = z.object({
   supplierCode: z.string().trim().nullable().optional(),
   price: z.number().int().min(0, "Fiyat negatif olamaz"),
   compareAtPrice: z.number().int().min(0).nullable().optional(),
+  clubPrice: z.number().int().min(0).nullable().optional(),
   costPrice: z.number().int().min(0).nullable().optional(),
   weightGrams: z.number().int().min(0).nullable().optional(),
   position: z.number().int().min(0).default(0),
@@ -83,6 +84,7 @@ export const productUpsertSchema = z.object({
   seoTitle: z.string().trim().nullable().optional(),
   seoDescription: z.string().trim().nullable().optional(),
   weightGrams: z.number().int().min(0).nullable().optional(),
+  clubPrice: z.number().int().min(0).nullable().optional(),
   categoryIds: z.array(z.string()).default([]),
   primaryCategoryId: z.string().nullable().optional(),
   collectionIds: z.array(z.string()).default([]),
@@ -93,7 +95,8 @@ export const productUpsertSchema = z.object({
   attributes: z.array(productAttributeValueInputSchema).default([]),
 });
 
-export type ProductUpsertInput = z.infer<typeof productUpsertSchema>;
+export type ProductUpsertInput = z.input<typeof productUpsertSchema>;
+export type ProductUpsertOutput = z.output<typeof productUpsertSchema>;
 
 export const bulkStatusUpdateSchema = z.object({
   productIds: z.array(z.string().min(1)).min(1, "En az bir ürün seçilmelidir"),
@@ -270,6 +273,7 @@ export interface ProductEditorData {
     seoTitle: string;
     seoDescription: string;
     weightGrams: number | null;
+    clubPrice: number | null;
     categoryIds: string[];
     primaryCategoryId: string | null;
     collectionIds: string[];

@@ -27,6 +27,7 @@ import {
   ArrowsLeftRight,
 } from "@phosphor-icons/react";
 import { formatMoney } from "@/lib/money";
+import type { ClubSettings } from "@/lib/settings/schemas";
 import { TR_CITIES } from "@/data/tr-cities";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -68,6 +69,16 @@ interface OrderFulfillment {
   trackingUrl: string | null;
 }
 
+interface OrderReturnRecord {
+  id: string;
+  status: string;
+  returnCode: string | null;
+  carrierCode: string | null;
+  refundAmount: number | null;
+  hygieneAccepted: boolean;
+  createdAt: Date;
+}
+
 interface OrderRecord {
   id: string;
   number: number;
@@ -79,6 +90,7 @@ interface OrderRecord {
   currency: string;
   items: OrderItem[];
   fulfillments: OrderFulfillment[];
+  returns?: OrderReturnRecord[];
 }
 
 interface AddressRecord {
@@ -112,6 +124,7 @@ interface AccountDashboardClientProps {
     phone: string | null;
     totalSpent: number;
     orderCount: number;
+    loyaltyPoints: number;
     createdAt: Date;
     acceptsMarketing: boolean;
   };
@@ -127,6 +140,8 @@ interface AccountDashboardClientProps {
   collections: WishlistCollectionSummary[];
   activePromotions: PromotionRecord[];
   recommendedProducts: ProductCardData[];
+  pendingLoyaltyPoints?: number;
+  clubSettings?: ClubSettings | null;
 }
 
 const ORDER_STATUS_LABEL: Record<string, string> = {
@@ -162,11 +177,16 @@ export function AccountDashboardClient({
   collections,
   activePromotions,
   recommendedProducts,
+  pendingLoyaltyPoints = 0,
+  clubSettings,
 }: AccountDashboardClientProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const rawTab = searchParams.get("tab") ?? "genel-bakis";
   const { refreshWishlist } = useWishlist();
+
+  const pointVal = clubSettings?.pointValueKurus ?? 50;
+  const maturityDays = clubSettings?.pointsMaturityDays ?? 2;
 
   const [activeTab, setActiveTab] = React.useState<string>(rawTab);
   const [selectedCollectionId, setSelectedCollectionId] = React.useState<
@@ -182,6 +202,8 @@ export function AccountDashboardClient({
     string | null
   >(null);
   const [addingItemId, setAddingItemId] = React.useState<string | null>(null);
+  const [activeReturnOrderId, setActiveReturnOrderId] = React.useState<string | null>(null);
+  const [returnSuccessMessage, setReturnSuccessMessage] = React.useState<string | null>(null);
 
   // URL tab senkronizasyonu
   React.useEffect(() => {
@@ -303,6 +325,15 @@ export function AccountDashboardClient({
                 >
                   <tier.icon className="h-3.5 w-3.5" weight="fill" />
                   {customerGroupName || tier.label}
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-0.5 text-xs font-semibold text-[var(--ink)]">
+                  <Crown className="h-3.5 w-3.5 text-[var(--accent)]" weight="fill" />
+                  VezollaClub: {customer.loyaltyPoints} Puan ({formatMoney(customer.loyaltyPoints * pointVal, "TRY")})
+                  {pendingLoyaltyPoints > 0 && (
+                    <span className="text-[10px] text-[var(--muted)] font-normal">
+                      (+{pendingLoyaltyPoints} Bekleyen)
+                    </span>
+                  )}
                 </span>
               </div>
               <p className="mt-0.5 text-xs text-[var(--muted)]">
@@ -479,6 +510,68 @@ export function AccountDashboardClient({
             </div>
           )}
 
+          {/* VezollaClub Sadakat ve Puan Durum Kartı */}
+          {(!clubSettings || clubSettings.accountShowClubCard) && (
+            <section className="rounded-[var(--radius-base,0.75rem)] border border-[var(--border)] bg-[var(--card)] p-5 space-y-4 shadow-xs">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-[var(--radius-base,0.375rem)] bg-[var(--accent)] text-[var(--accent-fg)]">
+                    <Crown className="h-5 w-5" weight="fill" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-[var(--ink)]">
+                      {clubSettings?.accountCardTitle ?? "VezollaClub Puan Hesabınız"}
+                    </h3>
+                    <p className="text-xs text-[var(--muted)]">
+                      {clubSettings?.accountCardSubtitle ?? "Her 1.000 TL harcamanıza 100 Puan (50 TL indirim) kazanırsınız."}
+                    </p>
+                  </div>
+                </div>
+                <span className="rounded-full bg-[var(--surface)] border border-[var(--border)] px-3 py-1 text-xs font-semibold text-[var(--ink)]">
+                  {clubSettings?.accountConversionBadge ?? "10 Puan = 5 TL"}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="rounded-[var(--radius-base,0.5rem)] border border-[var(--border)] bg-[var(--surface)] p-4">
+                  <span className="text-xs font-medium text-[var(--muted)]">
+                    Kullanılabilir Bakiye
+                  </span>
+                  <div className="mt-1 flex items-baseline gap-2">
+                    <span className="text-2xl font-extrabold text-[var(--ink)]">
+                      {customer.loyaltyPoints}
+                    </span>
+                    <span className="text-xs text-[var(--muted)]">Puan</span>
+                    <span className="text-sm font-bold text-emerald-600">
+                      ({formatMoney(customer.loyaltyPoints * pointVal, "TRY")})
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-[var(--muted)]">
+                    Sepetteki sipariş tutarınızın %{clubSettings?.maxOrderDiscountPercent ?? 20}&apos;sine kadar hemen düşebilirsiniz.
+                  </p>
+                </div>
+
+                <div className="rounded-[var(--radius-base,0.5rem)] border border-[var(--border)] bg-[var(--surface)] p-4">
+                  <span className="text-xs font-medium text-[var(--muted)]">
+                    Bekleyen Puanlar
+                  </span>
+                  <div className="mt-1 flex items-baseline gap-2">
+                    <span className="text-2xl font-extrabold text-[var(--accent)]">
+                      {pendingLoyaltyPoints}
+                    </span>
+                    <span className="text-xs text-[var(--muted)]">Puan</span>
+                    <span className="text-sm font-bold text-[var(--ink)]">
+                      ({formatMoney(pendingLoyaltyPoints * pointVal, "TRY")})
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-[var(--muted)]">
+                    {(clubSettings?.accountPendingNotice ?? "Siparişiniz teslim edildikten {days} gün sonra otomatik olarak bakiyenize aktarılır.").replace("{days}", String(maturityDays))}
+                  </p>
+                </div>
+              </div>
+            </section>
+          )}
+
           {/* Son Siparişin Canlı Kargo İlerleme Takibi */}
           {latestOrder && (
             <section className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 space-y-4">
@@ -591,7 +684,7 @@ export function AccountDashboardClient({
                 {activePromotions.slice(0, 3).map((promo) => (
                   <div
                     key={promo.id}
-                    className="flex flex-col justify-between rounded-lg border border-dashed border-amber-300 dark:border-amber-700 bg-amber-50/40 dark:bg-amber-950/20 p-4 space-y-2"
+                    className="flex flex-col justify-between rounded-[var(--radius-base,0.5rem)] border border-dashed border-[var(--border)] bg-[var(--surface)] p-4 space-y-2"
                   >
                     <div>
                       <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">
@@ -1098,6 +1191,195 @@ export function AccountDashboardClient({
                     ))}
                   </div>
                 )}
+
+                {/* Mevcut İade Talepleri (RMA) ve Kargo Kodları */}
+                {order.returns && order.returns.length > 0 && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3.5 text-xs space-y-2">
+                    <div className="flex items-center gap-2 font-bold text-amber-950">
+                      <Package className="h-4 w-4 text-amber-700" />
+                      <span>İade Talepleriniz (RMA)</span>
+                    </div>
+                    {order.returns.map((ret) => (
+                      <div
+                        key={ret.id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-amber-200/70 pt-2"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge
+                            variant={
+                              ret.status === "APPROVED"
+                                ? "success"
+                                : ret.status === "RECEIVED"
+                                ? "accent"
+                                : ret.status === "REFUNDED"
+                                ? "success"
+                                : "warning"
+                            }
+                          >
+                            {ret.status === "REQUESTED"
+                              ? "Onay Bekliyor"
+                              : ret.status === "APPROVED"
+                              ? "Onaylandı"
+                              : ret.status === "RECEIVED"
+                              ? "Depoya Ulaştı"
+                              : ret.status === "REFUNDED"
+                              ? "Ücret İade Edildi"
+                              : ret.status}
+                          </Badge>
+                          {ret.returnCode && (
+                            <span className="font-mono font-bold text-zinc-900 bg-white px-2 py-0.5 rounded border border-amber-300 shadow-2xs">
+                              Kargo İade Kodu: {ret.returnCode} ({ret.carrierCode || "Yurtiçi Kargo"})
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-amber-900">
+                          {ret.carrierCode || "Yurtiçi Kargo"} şubesine iade kodunuzu bildirerek ücretsiz teslim edebilirsiniz.
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* İade Talebi Oluşturma Butonu ve Akordeon Formu */}
+                {order.paymentStatus === "PAID" && order.status !== "CANCELLED" && (
+                  <div className="pt-2">
+                    {activeReturnOrderId === order.id ? (
+                      <form
+                        action={async (formData) => {
+                          await submitReturnStoreFormAction(formData);
+                          setActiveReturnOrderId(null);
+                          setReturnSuccessMessage("İade talebiniz ve kargo kodunuz başarıyla oluşturuldu.");
+                          setTimeout(() => setReturnSuccessMessage(null), 5000);
+                        }}
+                        className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 text-xs space-y-4"
+                      >
+                        <div className="flex items-center justify-between border-b border-[var(--border)] pb-2">
+                          <h4 className="font-bold text-[var(--ink)]">
+                            Sipariş #{order.number} İçin İade Talebi Oluştur
+                          </h4>
+                          <button
+                            type="button"
+                            onClick={() => setActiveReturnOrderId(null)}
+                            className="text-xs text-[var(--muted)] hover:text-[var(--ink)]"
+                          >
+                            Vazgeç
+                          </button>
+                        </div>
+
+                        <input type="hidden" name="orderId" value={order.id} />
+
+                        <div className="space-y-2">
+                          <Label className="font-semibold text-[var(--ink)]">
+                            İade Edilecek Ürünler ve Adetleri:
+                          </Label>
+                          <div className="space-y-1.5">
+                            {order.items.map((item) => (
+                              <div
+                                key={item.id}
+                                className="flex items-center justify-between gap-3 rounded border border-[var(--border)] bg-[var(--card)] p-2.5"
+                              >
+                                <span className="font-medium text-[var(--ink)]">
+                                  {item.title} {item.variantTitle ? `(${item.variantTitle})` : ""}
+                                </span>
+                                <div className="flex items-center gap-2">
+                                  <label className="text-[11px] text-[var(--muted)]">Adet:</label>
+                                  <select
+                                    name={`return_qty_${item.id}`}
+                                    defaultValue="1"
+                                    className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs"
+                                  >
+                                    {Array.from({ length: item.quantity }, (_, i) => i + 1).map((q) => (
+                                      <option key={q} value={q}>
+                                        {q}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div className="space-y-1">
+                            <Label htmlFor="reason">İade Nedeni</Label>
+                            <select
+                              id="reason"
+                              name="reason"
+                              className="w-full rounded border border-[var(--border)] bg-[var(--surface)] p-2 text-xs"
+                            >
+                              <option value="Beden Uymadı (Kalıp Dar)">Beden Uymadı (Kalıp Dar)</option>
+                              <option value="Beden Uymadı (Kalıp Geniş)">Beden Uymadı (Kalıp Geniş)</option>
+                              <option value="Model / Kumaş Beklentimi Karşılamadı">Model / Kumaş Beklentimi Karşılamadı</option>
+                              <option value="Kusurlu / Hatalı Ürün">Kusurlu / Hatalı Ürün</option>
+                              <option value="Fikrimi Değiştirdim">Fikrimi Değiştirdim</option>
+                            </select>
+                          </div>
+
+                          <div className="space-y-1">
+                            <Label htmlFor="carrierCode">Tercih Edilen Kargo Firması</Label>
+                            <select
+                              id="carrierCode"
+                              name="carrierCode"
+                              className="w-full rounded border border-[var(--border)] bg-[var(--surface)] p-2 text-xs"
+                            >
+                              <option value="YURTICI">Yurtiçi Kargo (Ücretsiz İade)</option>
+                              <option value="ARAS">Aras Kargo</option>
+                              <option value="MNG">MNG Kargo</option>
+                              <option value="SURAT">Sürat Kargo</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <Label htmlFor="customerNote">Açıklama / Notunuz (İsteğe Bağlı)</Label>
+                          <Input
+                            id="customerNote"
+                            name="customerNote"
+                            placeholder="Ürün hakkındaki iade notunuzu buraya yazabilirsiniz..."
+                          />
+                        </div>
+
+                        {/* Mesafeli Sözleşmeler Yönetmeliği m. 15/ç Hijyen İstisnası Yasal Onay Kutusu */}
+                        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-950">
+                          <label className="flex items-start gap-2.5 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              name="hygieneAccepted"
+                              required
+                              className="mt-0.5 h-4 w-4 shrink-0 rounded border-amber-400 text-[var(--accent)] focus:ring-[var(--accent)]"
+                            />
+                            <span>
+                              <strong>Yasal Bilgilendirme ve Hijyen Onayı:</strong> 6502 sayılı Tüketicinin Korunması Hakkında Kanun ve Mesafeli Sözleşmeler Yönetmeliği m. 15/ç uyarınca; ambalajı, hijyen koruma bandı veya mührü açılmış alt iç giyim ve mayo ürünlerinde hijyen/sağlık gerekçesiyle cayma hakkının bulunmadığını, koruyucu hijyen bandı sökülmüş ürünlerin iadesinin kabul edilmeyeceğini okudum ve kabul ediyorum.
+                            </span>
+                          </label>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-1">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setActiveReturnOrderId(null)}
+                          >
+                            Vazgeç
+                          </Button>
+                          <Button type="submit" variant="primary" size="sm">
+                            İade Kodu Oluştur &rarr;
+                          </Button>
+                        </div>
+                      </form>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setActiveReturnOrderId(order.id)}
+                        className="text-xs font-semibold text-[var(--muted)] hover:text-[var(--accent)] underline transition-colors"
+                      >
+                        + Bu Sipariş İçin İade Talebi Aç (RMA)
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -1107,12 +1389,12 @@ export function AccountDashboardClient({
       {/* TAB: KUPONLARIM & AYRICALIKLARIM */}
       {activeTab === "kuponlar" && (
         <div className="space-y-6">
-          <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/20 p-5 space-y-2">
-            <h3 className="text-sm font-bold text-amber-950 dark:text-amber-200 flex items-center gap-2">
-              <Crown className="h-4 w-4 text-amber-600" weight="fill" />
+          <div className="rounded-[var(--radius-base,0.75rem)] border border-[var(--border)] bg-[var(--surface)] p-5 space-y-2">
+            <h3 className="text-sm font-bold text-[var(--ink)] flex items-center gap-2">
+              <Crown className="h-4 w-4 text-[var(--accent)]" weight="fill" />
               Size Özel İndirim ve Sadakat Avantajları
             </h3>
-            <p className="text-xs text-amber-900/80 dark:text-amber-300/80">
+            <p className="text-xs text-[var(--muted)]">
               Bu kodları sepetinizde veya ödeme adımında &quot;Kupon Kodu&quot; alanına girerek anında indirim kazanabilirsiniz.
             </p>
           </div>
@@ -1124,7 +1406,7 @@ export function AccountDashboardClient({
                 className="flex flex-col justify-between rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-xs space-y-3"
               >
                 <div>
-                  <span className="inline-block rounded bg-amber-100 dark:bg-amber-950/60 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300">
+                  <span className="inline-block rounded-[var(--radius-base,0.25rem)] bg-[var(--surface)] border border-[var(--border)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--ink)]">
                     {promo.type === "PERCENTAGE"
                       ? `%${promo.value / 100} İndirim`
                       : promo.type === "FIXED_AMOUNT"

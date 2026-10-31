@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { getCurrentCustomer } from "@/lib/auth/session";
+import { getClubSettings } from "@/lib/settings/service";
 import { computeCartSummary } from "@/modules/checkout/cart";
 import { buildCartContractPreview } from "@/modules/checkout/service";
 import { CheckoutClient } from "./checkout-client";
@@ -11,13 +12,14 @@ export const metadata: Metadata = {
 };
 
 export default async function CheckoutPage() {
-  const [summary, customer] = await Promise.all([
+  const [summary, customer, clubSettings] = await Promise.all([
     computeCartSummary(),
     getCurrentCustomer(),
+    getClubSettings(),
   ]);
 
-  if (summary.lines.length === 0) {
-    redirect("/sepet");
+  if (summary.lines.length === 0 || !summary.isMinOrderSubtotalMet) {
+    redirect("/sepet?error=min_order");
   }
 
   const rawAddresses = customer
@@ -78,6 +80,7 @@ export default async function CheckoutPage() {
             : null
         }
         savedAddresses={savedAddresses}
+        clubSettings={clubSettings}
       />
     </div>
   );

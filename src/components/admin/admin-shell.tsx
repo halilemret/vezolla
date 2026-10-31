@@ -26,6 +26,8 @@ import {
   Receipt,
   Funnel,
   Globe,
+  CreditCard,
+  Crown,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/cn";
 import { CommandPalette } from "@/components/admin/command-palette";
@@ -82,6 +84,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "Raporlar", href: "/admin/raporlar", icon: ChartBar },
       { label: "Ayarlar ve Yetkiler", href: "/admin/ayarlar", icon: Gear },
+      { label: "Taksit Yönetimi", href: "/admin/ayarlar/taksit", icon: CreditCard },
+      { label: "VezollaClub Ayarları", href: "/admin/ayarlar/vezollaclub", icon: Crown },
     ],
   },
 ];

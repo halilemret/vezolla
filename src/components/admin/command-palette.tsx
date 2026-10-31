@@ -29,6 +29,8 @@ const STATIC_COMMANDS = [
   { label: "Satış ve Kâr Raporları", href: "/admin/raporlar", group: "Sayfalar" },
   { label: "SEO & GEO Optimizasyonu", href: "/admin/seo-geo", group: "Sayfalar" },
   { label: "Mağaza ve Tema Ayarları", href: "/admin/ayarlar", group: "Sayfalar" },
+  { label: "Taksit Yönetimi & Kart Oranları", href: "/admin/ayarlar/taksit", group: "Sayfalar" },
+  { label: "VezollaClub Sadakat ve Puan Ayarları", href: "/admin/ayarlar/vezollaclub", group: "Sayfalar" },
   { label: "Denetim Kaydı (Audit Log)", href: "/admin/ayarlar/denetim", group: "Sayfalar" },
 ];
 

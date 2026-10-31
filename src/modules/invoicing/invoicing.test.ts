@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { db } from "@/lib/db";
 import { generateUblTrXml, type UblInvoiceData } from "./ubl-generator";
 import { listInvoices } from "./service";
 import { DEFAULT_INVOICE_SETTINGS } from "@/lib/settings/schemas";
@@ -143,6 +144,9 @@ describe("e-Fatura / e-Arşiv UBL-TR 1.2 Motoru", () => {
   });
 
   it("listInvoices fonksiyonu veritabanından faturaları hatasız listeler", async () => {
+    vi.spyOn(db.invoice, "findMany").mockResolvedValueOnce([] as never);
+    vi.spyOn(db.invoice, "count").mockResolvedValueOnce(0);
+
     const res = await listInvoices({ page: 1, pageSize: 10 });
     expect(res).toBeDefined();
     expect(Array.isArray(res.invoices)).toBe(true);

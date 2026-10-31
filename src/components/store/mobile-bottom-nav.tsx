@@ -11,6 +11,7 @@ import {
   User,
 } from "@phosphor-icons/react";
 import { useWishlist } from "@/components/store/wishlist-context";
+import { useCart } from "@/components/store/cart-context";
 
 interface MobileBottomNavProps {
   cartCount: number;
@@ -20,6 +21,8 @@ interface MobileBottomNavProps {
 export function MobileBottomNav({ cartCount, customer }: MobileBottomNavProps) {
   const pathname = usePathname();
   const { wishlistCount } = useWishlist();
+  const { openCart, cartCount: liveCartCount } = useCart();
+  const displayCartCount = liveCartCount || cartCount;
 
   // Sepet ve ödeme sayfalarında odaklanmış ödeme barına yer açmak için genel alt menüyü gizle
   if (pathname === "/sepet" || pathname === "/odeme") {
@@ -44,7 +47,11 @@ export function MobileBottomNav({ cartCount, customer }: MobileBottomNavProps) {
       href: "/sepet",
       icon: ShoppingBag,
       isActive: pathname === "/sepet" || pathname === "/odeme",
-      badge: cartCount > 0 ? cartCount : null,
+      badge: displayCartCount > 0 ? displayCartCount : null,
+      onClick: (e: React.MouseEvent) => {
+        e.preventDefault();
+        openCart();
+      },
     },
     {
       label: "Favoriler",
@@ -74,6 +81,7 @@ export function MobileBottomNav({ cartCount, customer }: MobileBottomNavProps) {
             <Link
               key={item.label}
               href={item.href}
+              onClick={item.onClick}
               className={`relative flex flex-col items-center justify-center h-full py-1 gap-0.5 text-center transition-all active:scale-90 ${
                 active
                   ? "text-[var(--accent)] font-bold"

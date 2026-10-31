@@ -8,22 +8,22 @@ import {
   getCurrentCustomer,
 } from "@/lib/auth/session";
 import {
-  getAbandonedCartSettings,
   getConversionSettings,
   getStoreSettings,
   getThemeSettings,
 } from "@/lib/settings/service";
 import { ensureDefaultMenus } from "@/modules/content/service";
-import { getRecoveryOfferPreview } from "@/modules/analytics/abandoned-cart";
 import { StoreHeader } from "@/components/store/store-header";
 import { StoreFooter } from "@/components/store/store-footer";
 import { VisitorConsentAndBeacon } from "@/components/store/visitor-tracker";
-import { ExitIntentModal } from "@/components/store/exit-intent-modal";
 import { LiveSalesToast } from "@/components/store/live-sales-toast";
 import { MobileBottomNav } from "@/components/store/mobile-bottom-nav";
 import { DiscreetShippingBanner } from "@/components/store/discreet-shipping-banner";
 import { WishlistProvider } from "@/components/store/wishlist-context";
+import { CartProvider } from "@/components/store/cart-context";
+import { CartDrawer } from "@/components/store/cart-drawer";
 import { StoreStructuredData } from "@/components/store/store-structured-data";
+import { getCartSummary } from "@/modules/checkout/cart";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +44,7 @@ export default async function StoreLayout({
         ? "denied"
         : "unset";
 
-  const [store, theme, conversionSettings, menus, categories, pages, customer, previewSegment] =
+  const [store, theme, conversionSettings, menus, categories, pages, customer, previewSegment, initialCartSummary] =
     await Promise.all([
       getStoreSettings(),
       getThemeSettings(),
@@ -78,6 +78,7 @@ export default async function StoreLayout({
             select: { name: true },
           })
         : Promise.resolve(null),
+      getCartSummary(),
     ]);
 
   const cartItemsAgg = await db.cartItem.aggregate({
@@ -111,12 +112,6 @@ export default async function StoreLayout({
 
   const initialProductIds = initialWishlistItems.map((i) => i.productId);
 
-  const abandonedSettings = await getAbandonedCartSettings();
-  const exitOffer =
-    abandonedSettings.exitIntentEnabled && cartCount > 0
-      ? await getRecoveryOfferPreview(abandonedSettings)
-      : null;
-
   const radiusValue =
     theme.radiusScale === "none"
       ? "0px"
@@ -145,49 +140,44 @@ export default async function StoreLayout({
         theme.themeMode === "dark" ? "dark" : ""
       }`}
     >
-      <WishlistProvider
-        initialProductIds={initialProductIds}
-        initialCollections={initialCollections}
-        isAuthenticated={Boolean(customer)}
-      >
-        <StoreStructuredData />
-        <StoreHeader
-          store={store}
-          theme={theme}
-          categories={categories}
-          headerItems={menus.header.items}
-          cartCount={cartCount}
-          customer={customer}
-          previewSegmentName={previewSegment?.name ?? null}
-        />
-
-        <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:py-8 lg:px-8 pb-20 md:pb-8 space-y-6">
-          {theme.discreetShippingNotice ? <DiscreetShippingBanner /> : null}
-          {children}
-        </main>
-
-        <StoreFooter store={store} pages={pages} footerItems={menus.footer.items} theme={theme} />
-
-        <MobileBottomNav cartCount={cartCount} customer={customer} />
-
-        <LiveSalesToast
-          enabled={conversionSettings.liveSalesToastEnabled}
-          intervalSeconds={conversionSettings.liveSalesToastIntervalSeconds}
-        />
-
-        <React.Suspense fallback={null}>
-          <VisitorConsentAndBeacon initialConsent={initialConsent} />
-        </React.Suspense>
-
-        {exitOffer ? (
-          <ExitIntentModal
+      <CartProvider initialSummary={initialCartSummary}>
+        <WishlistProvider
+          initialProductIds={initialProductIds}
+          initialCollections={initialCollections}
+          isAuthenticated={Boolean(customer)}
+        >
+          <StoreStructuredData />
+          <StoreHeader
+            store={store}
+            theme={theme}
+            categories={categories}
+            headerItems={menus.header.items}
             cartCount={cartCount}
-            enabled={abandonedSettings.exitIntentEnabled}
-            discountPercent={exitOffer.percent}
-            discountCode={exitOffer.code}
+            customer={customer}
+            previewSegmentName={previewSegment?.name ?? null}
           />
-        ) : null}
-      </WishlistProvider>
+
+          <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:py-8 lg:px-8 pb-20 md:pb-8 space-y-6">
+            {theme.discreetShippingNotice ? <DiscreetShippingBanner /> : null}
+            {children}
+          </main>
+
+          <StoreFooter store={store} pages={pages} footerItems={menus.footer.items} theme={theme} />
+
+          <MobileBottomNav cartCount={cartCount} customer={customer} />
+
+          <LiveSalesToast
+            enabled={conversionSettings.liveSalesToastEnabled}
+            intervalSeconds={conversionSettings.liveSalesToastIntervalSeconds}
+          />
+
+          <CartDrawer />
+
+          <React.Suspense fallback={null}>
+            <VisitorConsentAndBeacon initialConsent={initialConsent} />
+          </React.Suspense>
+        </WishlistProvider>
+      </CartProvider>
     </div>
   );
 }

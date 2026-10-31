@@ -9,9 +9,13 @@ import {
   DEFAULT_ABANDONED_CART_SETTINGS,
   DEFAULT_CONVERSION_SETTINGS,
   DEFAULT_INVOICE_SETTINGS,
+  DEFAULT_INSTALLMENT_SETTINGS,
+  DEFAULT_CLUB_SETTINGS,
   abandonedCartSettingsSchema,
   conversionSettingsSchema,
   invoiceSettingsSchema,
+  installmentSettingsSchema,
+  clubSettingsSchema,
   paymentSettingsSchema,
   seoSettingsSchema,
   storeSettingsSchema,
@@ -19,6 +23,9 @@ import {
   type AbandonedCartSettings,
   type ConversionSettings,
   type InvoiceSettings,
+  type InstallmentCardFamily,
+  type InstallmentSettings,
+  type ClubSettings,
   type PaymentSettings,
   type SeoSettings,
   type StoreSettings,
@@ -28,6 +35,10 @@ import {
 export type {
   AbandonedCartSettings,
   ConversionSettings,
+  InvoiceSettings,
+  InstallmentCardFamily,
+  InstallmentSettings,
+  ClubSettings,
   PaymentSettings,
   SeoSettings,
   StoreSettings,
@@ -154,6 +165,44 @@ export async function saveInvoiceSettings(
   await db.setting.upsert({
     where: { key: "invoice" },
     create: { key: "invoice", value: data as unknown as Prisma.InputJsonValue },
+    update: { value: data as unknown as Prisma.InputJsonValue },
+  });
+  return data;
+}
+
+export async function getInstallmentSettings(): Promise<InstallmentSettings> {
+  const row = await db.setting.findUnique({ where: { key: "installment" } });
+  if (!row) return DEFAULT_INSTALLMENT_SETTINGS;
+  const parsed = installmentSettingsSchema.safeParse(row.value);
+  return parsed.success ? parsed.data : DEFAULT_INSTALLMENT_SETTINGS;
+}
+
+export async function saveInstallmentSettings(
+  input: InstallmentSettings
+): Promise<InstallmentSettings> {
+  const data = installmentSettingsSchema.parse(input);
+  await db.setting.upsert({
+    where: { key: "installment" },
+    create: { key: "installment", value: data as unknown as Prisma.InputJsonValue },
+    update: { value: data as unknown as Prisma.InputJsonValue },
+  });
+  return data;
+}
+
+export async function getClubSettings(): Promise<ClubSettings> {
+  const row = await db.setting.findUnique({ where: { key: "vezollaclub" } });
+  if (!row) return DEFAULT_CLUB_SETTINGS;
+  const parsed = clubSettingsSchema.safeParse(row.value);
+  return parsed.success ? parsed.data : DEFAULT_CLUB_SETTINGS;
+}
+
+export async function saveClubSettings(
+  input: ClubSettings
+): Promise<ClubSettings> {
+  const data = clubSettingsSchema.parse(input);
+  await db.setting.upsert({
+    where: { key: "vezollaclub" },
+    create: { key: "vezollaclub", value: data as unknown as Prisma.InputJsonValue },
     update: { value: data as unknown as Prisma.InputJsonValue },
   });
   return data;

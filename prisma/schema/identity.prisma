@@ -75,18 +75,20 @@ model Customer {
   isActive           Boolean        @default(true)
   orderCount         Int            @default(0)
   totalSpent         Int            @default(0)
+  loyaltyPoints      Int            @default(0)
   lastOrderAt        DateTime?
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
 
-  sessions  CustomerSession[]
-  addresses Address[]
-  orders    Order[]
-  carts     Cart[]
+  sessions            CustomerSession[]
+  addresses           Address[]
+  orders              Order[]
+  carts               Cart[]
   wishlist            WishlistItem[]
   wishlistCollections WishlistCollection[]
   reviews             Review[]
-  visitors  Visitor[]
+  loyaltyTransactions LoyaltyTransaction[]
+  visitors            Visitor[]
 
   @@index([createdAt])
 }
@@ -150,3 +152,23 @@ model AuthToken {
   usedAt      DateTime?
   createdAt   DateTime      @default(now())
 }
+
+model LoyaltyTransaction {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  points     Int
+  balance    Int
+  reason     String
+  /// AVAILABLE | PENDING | CANCELLED
+  status     String   @default("AVAILABLE")
+  /// Teslimden 2 gün sonra aktifleşme tarihi
+  availableAt DateTime?
+  orderId    String?
+  reviewId   String?
+  createdAt  DateTime @default(now())
+
+  @@index([customerId])
+  @@index([orderId])
+}
+

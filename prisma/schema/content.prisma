@@ -132,6 +132,11 @@ model Review {
   body               String
   status             ReviewStatus @default(PENDING)
   isVerifiedPurchase Boolean      @default(false)
+  heightCm           Int?
+  weightKg           Int?
+  sizePurchased      String?
+  fitRating          String?
+  images             String[]     @default([])
   reply              String?
   repliedAt          DateTime?
   createdAt          DateTime     @default(now())

@@ -18,6 +18,7 @@ export const storeSettingsSchema = z.object({
   onlyBuyersCanReview: z.boolean().default(true),
   autoApproveReviews: z.boolean().default(false),
   visitorRetentionDays: z.number().int().min(1).max(730).default(180),
+  minOrderSubtotalMinor: z.number().int().min(0).default(0),
 });
 
 export type StoreSettings = z.infer<typeof storeSettingsSchema>;
@@ -40,6 +41,7 @@ export const DEFAULT_STORE_SETTINGS: StoreSettings = {
   onlyBuyersCanReview: true,
   autoApproveReviews: false,
   visitorRetentionDays: 180,
+  minOrderSubtotalMinor: 0,
 };
 
 export const themeSettingsSchema = z.object({
@@ -220,4 +222,132 @@ export const invoiceSettingsSchema = z.object({
 export type InvoiceSettings = z.infer<typeof invoiceSettingsSchema>;
 
 export const DEFAULT_INVOICE_SETTINGS: InvoiceSettings = invoiceSettingsSchema.parse({});
+
+export const installmentCardFamilySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  bankNames: z.string(),
+  accentColor: z.string(),
+  logoUrl: z.string().default(""),
+  rates: z.record(z.coerce.number(), z.coerce.number()),
+});
+
+export type InstallmentCardFamily = z.infer<typeof installmentCardFamilySchema>;
+
+export const installmentSettingsSchema = z.object({
+  enabled: z.boolean().default(true),
+  bannerTitle: z.string().default("Peşin Fiyatına 3 Taksit Fırsatı"),
+  bannerSubtitle: z
+    .string()
+    .default("Tüm bonus, world, axess, maximum, cardfinans ve paraf kartlara"),
+  bannerBadgeUrl: z.string().default(""),
+  cardFamilies: z.array(installmentCardFamilySchema).default([
+    {
+      id: "bonus",
+      name: "Bonus",
+      bankNames: "Garanti BBVA, DenizBank, TEB, Şekerbank",
+      accentColor: "#059669",
+      logoUrl: "",
+      rates: { 1: 0, 2: 0, 3: 0, 6: 6.45, 9: 11.25 },
+    },
+    {
+      id: "world",
+      name: "World",
+      bankNames: "Yapı Kredi, Albaraka, VakıfBank, Anadolubank",
+      accentColor: "#8b5cf6",
+      logoUrl: "",
+      rates: { 1: 0, 2: 0, 3: 0, 6: 6.5, 9: 11.5 },
+    },
+    {
+      id: "axess",
+      name: "Axess",
+      bankNames: "Akbank",
+      accentColor: "#e11d48",
+      logoUrl: "",
+      rates: { 1: 0, 2: 0, 3: 0, 6: 6.25, 9: 10.95 },
+    },
+    {
+      id: "maximum",
+      name: "Maximum",
+      bankNames: "Türkiye İş Bankası",
+      accentColor: "#d97706",
+      logoUrl: "",
+      rates: { 1: 0, 2: 0, 3: 0, 6: 6.5, 9: 11.5 },
+    },
+    {
+      id: "cardfinans",
+      name: "CardFinans",
+      bankNames: "QNB Finansbank",
+      accentColor: "#0284c7",
+      logoUrl: "",
+      rates: { 1: 0, 2: 0, 3: 0, 6: 6.75, 9: 11.75 },
+    },
+    {
+      id: "paraf",
+      name: "Paraf",
+      bankNames: "Halkbank",
+      accentColor: "#2563eb",
+      logoUrl: "",
+      rates: { 1: 0, 2: 0, 3: 0, 6: 6.3, 9: 11.0 },
+    },
+  ]),
+});
+
+export type InstallmentSettings = z.infer<typeof installmentSettingsSchema>;
+
+export const DEFAULT_INSTALLMENT_SETTINGS: InstallmentSettings =
+  installmentSettingsSchema.parse({});
+
+export const clubSettingsSchema = z.object({
+  // Genel & Sadakat Motoru Kuralları
+  enabled: z.boolean().default(true),
+  pointValueKurus: z.coerce.number().int().min(1).default(50), // 1 Puan = 50 Kuruş (0.50 TL)
+  earningRatePercent: z.coerce.number().min(0).max(100).default(10), // %10 (1.000 TL = 100 Puan)
+  maxOrderDiscountPercent: z.coerce.number().min(1).max(100).default(20), // Sepet tutarının en fazla %20'si
+  pointsMaturityDays: z.coerce.number().int().min(0).default(2), // Teslimattan 2 gün sonra
+  photoReviewPoints: z.coerce.number().int().min(0).default(25),
+  textReviewPoints: z.coerce.number().int().min(0).default(10),
+
+  // 1. Ürün Sayfası (PDP) Ayarları
+  pdpShowMemberPrice: z.boolean().default(true),
+  pdpMemberPriceTitle: z.string().default("VezollaClub Üyelerine Özel Fiyat:"),
+  pdpMemberPriceCtaText: z.string().default("Üye Ol & Bu Fiyatla Al"),
+  pdpShowEarningBadge: z.boolean().default(true),
+  pdpEarningBadgeTemplate: z
+    .string()
+    .default("Bu alışverişinizden {points} VezollaClub Puanı ({value} TL Değerinde) Kazanacaksınız."),
+
+  // 2. Sepet & Drawer Ayarları
+  cartShowEarningBadge: z.boolean().default(true),
+  cartEarningBadgeTemplate: z
+    .string()
+    .default("Bu alışverişinizden {points} VezollaClub Puanı ({value} TL Değerinde) Kazanacaksınız."),
+
+  // 3. Ödeme Adımı (Checkout) Ayarları
+  checkoutShowRedemption: z.boolean().default(true),
+  checkoutRedemptionTitle: z.string().default("Vezolla Club Sadakat Puanı"),
+  checkoutRedemptionNotice: z
+    .string()
+    .default("Bu siparişte en fazla {maxPoints} puan (sepetin %{percent}'si) harcayabilirsiniz."),
+  checkoutShowEarningBadge: z.boolean().default(true),
+  checkoutEarningBadgeTemplate: z
+    .string()
+    .default("Bu siparişinizden {points} VezollaClub Puanı ({value} TL Değerinde) Kazanacaksınız."),
+
+  // 4. Müşteri Hesabı & Profil (/hesabim) Ayarları
+  accountShowClubCard: z.boolean().default(true),
+  accountCardTitle: z.string().default("VezollaClub Puan Hesabınız"),
+  accountCardSubtitle: z
+    .string()
+    .default("Her 1.000 TL harcamanıza 100 Puan (50 TL indirim) kazanırsınız."),
+  accountConversionBadge: z.string().default("10 Puan = 5 TL"),
+  accountPendingNotice: z
+    .string()
+    .default("Siparişiniz teslim edildikten {days} gün sonra otomatik olarak bakiyenize aktarılır."),
+});
+
+export type ClubSettings = z.infer<typeof clubSettingsSchema>;
+
+export const DEFAULT_CLUB_SETTINGS: ClubSettings = clubSettingsSchema.parse({});
+
 

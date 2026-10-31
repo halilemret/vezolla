@@ -4,6 +4,7 @@ import { getOrderDetail } from "@/modules/orders/service";
 import {
   buildShippingLabelZpl,
   generateCarrierBarcode,
+  DISCREET_SHIPPING_LABEL,
   type ShippingLabelData,
 } from "@/modules/shipping/carriers";
 
@@ -49,10 +50,8 @@ export async function loadShippingLabel(
   const isFirstShipment = sequence === 1;
   const codPending = order.paymentMethod === "cod" && order.paymentStatus !== "PAID";
 
-  const summary = target.items
-    .map((fi) => `${fi.quantity}x ${fi.orderItem.title}`)
-    .join("; ")
-    .slice(0, MAX_ITEM_SUMMARY_LENGTH);
+  // Gizli kargo taahhüdü: Dış etiket üzerine ürün adları asla yazılmaz, nötr tanım kullanılır
+  const summary = DISCREET_SHIPPING_LABEL;
 
   const data: ShippingLabelData = {
     carrierCode: target.carrier,
